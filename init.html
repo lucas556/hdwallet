@@ -3,257 +3,289 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>助记词展示一次 + 分支导出 + FIDO2 加密（直接写库）</title>
+  <title>助记词展示一次 + FIDO2 加密（统一遮挡 + 30 秒自动恢复）</title>
   <style>
-    :root{--ink:#0f172a;--muted:#64748b;--ok:#059669;--err:#b91c1c;--bg:#f8fafc;--card:#ffffff}
-    *{box-sizing:border-box}
-    body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif;margin:0;background:var(--bg);color:var(--ink)}
-    .wrap{max-width:980px;margin:32px auto;padding:0 16px}
-    h1{font-size:24px;margin:0 0 4px}
-    .sub{color:var(--muted);margin-bottom:20px}
-    .card{background:var(--card);border:1px solid #e5e7eb;border-radius:16px;padding:18px;margin:14px 0}
-    .row{margin:12px 0}
-    .muted{color:var(--muted)}
-    button{padding:10px 16px;border-radius:12px;border:0;background:var(--ink);color:#fff;cursor:pointer}
-    button[disabled]{opacity:.45;cursor:not-allowed}
-    input[type="password"]{padding:10px 12px;border-radius:10px;border:1px solid #cbd5e1;width:240px}
-    .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-    .cell{position:relative;border:1px solid #e5e7eb;border-radius:10px;padding:12px;background:#f9fafb;text-align:center}
-    .badge{position:absolute;left:8px;top:6px;display:inline-block;background:#111827;color:#fff;border-radius:999px;padding:1px 7px;font-size:12px}
+    :root{--bg:#0b1220;--tx:#e5e7eb;--mut:#94a3b8;--card:#0f172a;--btn:#111827;--ok:#10b981;--err:#ef4444;--line:#1f2937}
+    html,body{background:#0b1220;color:var(--tx);font-family:system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
+    .wrap{max-width:980px;margin:28px auto;padding:0 16px}
+    h1{font-size:22px;margin:0 0 10px}
+    .muted{color:var(--mut)}
+    .row{margin:14px 0}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 16px}
+    button{padding:10px 16px;border-radius:12px;border:0;background:var(--btn);color:#fff;cursor:pointer}
+    button[disabled]{opacity:.5;cursor:not-allowed}
+    input[type="password"]{padding:10px 12px;border-radius:10px;border:1px solid #334155;background:#0b1220;color:#e2e8f0}
     .ok{color:var(--ok)} .err{color:var(--err)}
 
-    /* 助记词遮罩（点击显示，1 分钟后自动恢复） */
-    .mask{
-      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-      background:repeating-linear-gradient(45deg, rgba(15,23,42,.07) 0 12px, rgba(15,23,42,.12) 12px 24px);
-      color:#111827b3; font-weight:600; letter-spacing:.5px; border-radius:10px; cursor:pointer;
-      transition:opacity .2s ease; user-select:none
+    /* 助记词网格 */
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+    .cell{background:#0b1220;border:1px solid #1f2937;border-radius:12px;padding:12px 14px;position:relative}
+    .badge{display:inline-block;background:#1f2937;color:#cbd5e1;border-radius:999px;padding:2px 8px;margin-right:10px;font-size:12px}
+    .word{letter-spacing:.5px}
+
+    /* 统一遮挡容器 */
+    .mnemo-box{position:relative;margin-top:8px}
+    .mnemo-box.masked .word{opacity:0} /* 彻底隐藏文字，防“透字” */
+
+    /* 覆盖整个网格的实心蒙层（点击一次显示全部） */
+    .grid-mask{
+      position:absolute; inset:0; display:flex; flex-direction:column;
+      align-items:center; justify-content:center; text-align:center;
+      background:#0b1220; /* 实心背景完全遮住 */
+      border:1px solid #1f2937;border-radius:12px;
+      gap:10px; padding:16px; cursor:pointer; user-select:none
     }
-    .mask .eye{width:18px;height:18px;margin-right:6px;display:inline-block;border:2px solid #111827b3;border-radius:50%;position:relative}
-    .mask .eye:after{content:'';position:absolute;left:50%;top:50%;width:6px;height:6px;background:#111827b3;border-radius:50%;transform:translate(-50%,-50%)}
-    .notice{padding:10px 12px;border-radius:12px;background:#f1f5f9;border:1px dashed #cbd5e1;color:#0f172a;line-height:1.5}
-    code.small{background:#0f172a;color:#fff;padding:2px 6px;border-radius:6px}
+    .grid-mask .btn{display:inline-flex;align-items:center;gap:8px;
+      background:#111827;color:#fff;border-radius:999px;padding:10px 14px}
+    .grid-mask .muted{color:#94a3b8}
+    .grid-mask .eye{width:18px;height:18px;border:2px solid #fff;border-radius:50%;position:relative}
+    .grid-mask .eye:after{content:'';position:absolute;left:50%;top:50%;
+      width:6px;height:6px;background:#fff;border-radius:50%;transform:translate(-50%,-50%)}
+    .reveal-tip{margin-left:8px;color:#94a3b8}
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>钱包初始化</h1>
-    <div class="sub">一次性显示助记词 → 可选本地加密备份 → FIDO2 加密分支并写入数据库（不含助记词）</div>
-
-    <ol class="card" style="margin-top:0">
-      <li>生成助记词（<b>仅显示一次</b>）并在内存中导出各链分支（xprv/xpub 或 z*）。</li>
-      <li>（可选）输入强密码，生成<b>离线加密备份</b>（PBKDF2+AES-GCM，JSON 文件）。</li>
-      <li>注册/复用 FIDO2 凭证（若已存在可选择复用或新建）。</li>
-      <li>使用凭证派生 KEK → 加密分支 → <b>直接写入数据库</b>，成功后给出 bundle_id。</li>
-    </ol>
-
-    <!-- Step 1 -->
-    <div class="card">
-      <div class="row">
-        <button id="btn-gen">① 生成助记词（显示一次）</button>
-        <span id="gen-tip" class="muted">未生成</span>
-      </div>
-      <div id="mnemo-wrap" class="row" style="display:none">
-        <div class="notice" style="margin-bottom:10px">
-          出于安全考虑，助记词默认被遮挡。点击任意单元的<span class="eye" style="vertical-align:-2px;border-color:#0f172a;"></span>以显示，
-          可见时间 <b>60 秒</b>，随后自动再次遮挡。请立即抄写并妥善保管。
-        </div>
-        <div class="grid" id="mnemo-grid"></div>
-      </div>
-    </div>
-
-    <!-- Step 2 -->
-    <div class="card">
-      <div class="row">
-        <label><input id="want-backup" type="checkbox"> 我要生成<b>离线加密备份</b>（纯 JSON 文件）</label>
-      </div>
-      <div id="backup-area" class="row" style="display:none">
-        <div class="muted">密码需 ≥8，且必须包含：字母 + 数字 + 特殊字符。</div>
-        <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-          <input id="pw1" type="password" placeholder="备份密码">
-          <input id="pw2" type="password" placeholder="再次输入">
-          <button id="btn-backup" disabled>生成并下载备份 JSON</button>
-        </div>
-        <div id="pw-tip" class="muted"></div>
-      </div>
-    </div>
-
-    <!-- Step 3 -->
-    <div class="card">
-      <div class="row" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <button id="btn-register">② 注册/复用 FIDO2 凭证</button>
-        <span id="reg-tip" class="muted"></span>
-      </div>
-      <div class="notice">
-        不阻塞下一步：即使不先点本按钮，下一步在派生 KEK 时也会自动引导选择/创建凭证。
-      </div>
-    </div>
-
-    <!-- Step 4 -->
-    <div class="card">
-      <div class="row" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-        <button id="btn-encrypt" disabled>③ 加密分支并写入数据库</button>
-        <span id="encrypt-tip" class="muted"></span>
-      </div>
-      <div id="final-tip" class="row muted"></div>
-    </div>
-
-    <div class="muted" style="text-align:center;margin-top:16px">© 本页不保存助记词；最终写库 JSON 不包含助记词。</div>
+<div class="wrap">
+  <h1>助记词展示一次 + FIDO2 加密（统一遮挡）</h1>
+  <div class="muted" style="margin-bottom:14px">
+    流程：① 生成助记词（默认<b>统一遮挡</b>） → 点击蒙层按钮一次性显示<b>全部</b>（30 秒） → 自动重新遮挡。<br>
+    可选：离线备份（PBKDF2+AES-GCM JSON）。最后使用 FIDO2 PRF 派生 KEK 加密 xprv/xpub 写入 D1。
   </div>
 
-  <script type="module">
-    /***** 配置你的 Worker API 基址（必须 https） *****/
-    const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';  // ← 改成你的 workers.dev 或自定义域
+  <!-- Step 1 -->
+  <div class="card">
+    <div class="row">
+      <button id="btn-gen">① 生成助记词（显示一次）</button>
+      <span id="gen-tip" class="muted">未生成</span>
+    </div>
 
-    import {
-      genMnemonic, splitWords, mnemonicToSeed, exportBranches,
-      createPasswordBackupBlob, validatePasswordStrict
-    } from './js/hdwallet-core.js';
+    <div id="mnemo-wrap" class="row" style="display:none">
+      <div class="muted" style="margin-bottom:10px">
+        助记词默认<b>统一遮挡</b>。点击下方蒙层一次性显示<b>全部</b>，显示时长 <b>30 秒</b> 后会自动遮挡。
+      </div>
 
-    import {
-      ensureCredentialWithChoice,   // ← 使用这个：有则复用、无则新建（可提示）
-      deriveKEK,                    // PRF + HKDF → AES-GCM KEK
-      aesGcmEncryptStr,             // 加密 xprv/xpub
-      loadCredHex                   // 显示已缓存的凭证 id（可选）
-    } from './js/fido2.js';
+      <div id="mnemo-box" class="mnemo-box masked">
+        <div class="grid" id="mnemo-grid"></div>
 
-    const $ = id => document.getElementById(id);
+        <!-- 统一蒙层：点击一次显示所有 -->
+        <div id="grid-mask" class="grid-mask" title="点击显示全部 30 秒">
+          <div class="muted">助记词已生成，默认被遮挡</div>
+          <div class="btn">
+            <span class="eye" aria-hidden="true"></span>
+            <span>点击显示全部（30 秒）</span>
+          </div>
+          <div class="muted">确保周围安全，避免旁观与屏幕录制</div>
+        </div>
+      </div>
 
-    let mnemonic = null;   // 仅在内存停留
-    let branches = null;   // {ETH:{...}, BTC:{...}, EOS:{...}, TRON:{...}}
+      <div class="reveal-tip muted" id="reveal-tip" style="display:none"></div>
+    </div>
+  </div>
 
-    /** 保存到 D1（Worker 路由：POST /bundles） */
-    async function saveBundleToDB(bundle, { user_id='web-ui', note='' } = {}) {
-      const res = await fetch(API_BASE + '/bundles', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ user_id, note, bundle })
-      });
-      const data = await res.json().catch(()=>({}));
-      if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-      return data; // { ok:true, bundle_id:'...' }
+  <!-- Step 2 备份 -->
+  <div class="card">
+    <div class="row">
+      <label><input id="want-backup" type="checkbox"> 我要生成<b>离线加密备份</b>（JSON 文件）</label>
+    </div>
+    <div id="backup-area" class="row" style="display:none">
+      <div class="muted">密码需 ≥8，且必须包含：字母 + 数字 + 特殊字符。</div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <input id="pw1" type="password" placeholder="备份密码">
+        <input id="pw2" type="password" placeholder="再次输入">
+        <button id="btn-backup" disabled>生成并下载备份 JSON</button>
+      </div>
+      <div id="pw-tip" class="muted"></div>
+    </div>
+  </div>
+
+  <!-- Step 3 FIDO2 注册/复用 -->
+  <div class="card">
+    <div class="row">
+      <button id="btn-register">② 注册/复用 FIDO2 凭证</button>
+      <span id="reg-tip" class="muted"></span>
+    </div>
+  </div>
+
+  <!-- Step 4 加密并写库 -->
+  <div class="card">
+    <div class="row">
+      <button id="btn-encrypt" disabled>③ 加密分支并写入数据库</button>
+      <span id="encrypt-tip" class="muted"></span>
+    </div>
+    <div id="final-tip" class="row muted"></div>
+  </div>
+</div>
+
+<script type="module">
+  /********** 依赖模块 **********/
+  import {
+    genMnemonic, mnemonicToSeed, exportBranches,
+    createPasswordBackupBlob, validatePasswordStrict
+  } from './js/hdwallet-core.js';
+
+  import {
+    ensureCredentialWithChoice,
+    deriveKEK,
+    aesGcmEncryptStr
+  } from './js/fido2.js';
+
+  /********** 配置：你的 Worker API **********/
+  const API_BASE = 'https://wallet.lucas-l-shang.workers.dev'; // ← 改成你的 workers.dev 或自定义域名
+
+  /********** 小工具 **********/
+  const $ = id => document.getElementById(id);
+  async function saveBundleToDB(bundle, { user_id='web-ui', note='' } = {}) {
+    const res = await fetch(`${API_BASE}/bundles`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user_id, note, bundle })
+    });
+    const data = await res.json().catch(()=> ({}));
+    if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+    return data; // { ok:true, bundle_id:'...' }
+  }
+
+  /********** 状态 **********/
+  let mnemonic = null;
+  let branches = null;
+
+  /* ===== 统一遮挡控制 ===== */
+  let maskTimer = null;
+  const DISPLAY_MS = 30_000; // 30 秒
+
+  function applyMask() {
+    const box = $('mnemo-box');
+    if (!box) return;
+    box.classList.add('masked');
+    $('grid-mask').style.display = 'flex';
+    $('reveal-tip').style.display = 'none';
+    clearTimeout(maskTimer);
+  }
+
+  function revealAll() {
+    const box = $('mnemo-box');
+    if (!box) return;
+    box.classList.remove('masked');     // 全部单词可见
+    $('grid-mask').style.display = 'none';
+
+    // 倒计时提示
+    const tip = $('reveal-tip');
+    tip.style.display = 'inline';
+    let left = DISPLAY_MS / 1000; // 秒
+    tip.textContent = `已显示，${left}s 后自动遮挡`;
+    clearTimeout(maskTimer);
+    const tick = () => {
+      left -= 1;
+      if (left <= 0) { applyMask(); return; }
+      tip.textContent = `已显示，${left}s 后自动遮挡`;
+      maskTimer = setTimeout(tick, 1000);
+    };
+    maskTimer = setTimeout(tick, 1000);
+  }
+
+  // 点击蒙层按钮 -> 一次性显示全部
+  document.addEventListener('click', (e)=>{
+    if (e.target.closest('#grid-mask')) revealAll();
+  });
+
+  /* ===== 渲染助记词网格 ===== */
+  function renderMnemonicOnce(m){
+    const words = m.trim().split(/\s+/);
+    const grid = $('mnemo-grid'); grid.innerHTML = '';
+    words.forEach((w,i)=>{
+      const cell = document.createElement('div'); cell.className='cell';
+      cell.innerHTML = `<span class="badge">${i+1}</span><span class="word">${w}</span>`;
+      grid.appendChild(cell);
+    });
+    $('mnemo-wrap').style.display = 'block';
+    applyMask(); // 初始统一遮挡
+  }
+
+  /********** Step 1：生成助记词 **********/
+  $('btn-gen').onclick = ()=>{
+    mnemonic = genMnemonic(128); // 12 词
+    renderMnemonicOnce(mnemonic);
+    const seed = mnemonicToSeed(mnemonic, '');
+    branches = exportBranches(seed);
+    $('gen-tip').textContent = '助记词已生成（已统一遮挡）；分支已在内存导出。';
+    $('btn-encrypt').disabled = false;
+    $('final-tip').textContent = '';
+  };
+
+  /********** Step 2：离线备份（可选） **********/
+  $('want-backup').onchange = e=>{
+    $('backup-area').style.display = e.target.checked ? 'block' : 'none';
+    $('btn-backup').disabled = !e.target.checked;
+  };
+  $('pw1').oninput = $('pw2').oninput = ()=>{
+    const p1=$('pw1').value, p2=$('pw2').value;
+    if (!p1 && !p2){ $('pw-tip').textContent=''; $('btn-backup').disabled=true; return; }
+    if (p1!==p2){ $('pw-tip').innerHTML='<span class="err">两次密码不一致</span>'; $('btn-backup').disabled=true; return; }
+    const v = validatePasswordStrict(p1);
+    if (!v.ok){ $('pw-tip').innerHTML='<span class="err">'+v.reason+'</span>'; $('btn-backup').disabled=true; return; }
+    $('pw-tip').innerHTML='<span class="ok">密码强度通过</span>'; $('btn-backup').disabled=false;
+  };
+  $('btn-backup').onclick = async ()=>{
+    try{
+      if (!mnemonic){ alert('请先生成助记词'); return; }
+      const { blob } = await createPasswordBackupBlob(mnemonic, $('pw1').value);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href=url; a.download='mnemonic_backup.enc.json'; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url), 3000);
+      $('pw-tip').innerHTML = '<span class="ok">已生成并下载离线备份。</span>';
+    }catch(e){ $('pw-tip').innerHTML='<span class="err">备份失败：'+(e?.message||e)+'</span>'; console.error(e); }
+  };
+
+  /********** Step 3：注册/复用 FIDO2 凭证（不阻塞第 4 步） **********/
+  $('btn-register').onclick = async ()=>{
+    try{
+      const res = await ensureCredentialWithChoice(); // { ok, id_hex, created }
+      if (res?.created){
+        $('reg-tip').innerHTML = '<span class="ok">已注册新凭证。</span>';
+      }else{
+        $('reg-tip').innerHTML = `<span class="ok">已可使用凭证（id: ${String(res?.id_hex||'').slice(0,16)}…）。</span>`;
+      }
+    }catch(e){
+      $('reg-tip').innerHTML = '<span class="err">注册/复用失败：'+(e?.message||e)+'</span>';
+      console.error(e);
     }
+  };
 
-    /** 渲染助记词（默认遮挡）+ 点击显示 60s */
-    function renderMnemonicOnce(m){
-      const words = splitWords(m);
-      const grid = $('mnemo-grid'); grid.innerHTML = '';
-      words.forEach((w,i)=>{
-        const cell = document.createElement('div'); cell.className='cell';
-        cell.innerHTML = `<span class="badge">${i+1}</span><span class="word">${w}</span>`;
-        const mask = document.createElement('div');
-        mask.className = 'mask';
-        mask.innerHTML = `<span class="eye"></span>点击显示 60 秒`;
-        let timer = null;
-        const show = ()=>{
-          mask.style.opacity = '0'; mask.style.pointerEvents='none';
-          clearTimeout(timer);
-          timer = setTimeout(hide, 60_000); // 60s auto-hide
-        };
-        const hide = ()=>{
-          mask.style.opacity = '1'; mask.style.pointerEvents='auto';
-        };
-        mask.addEventListener('click', show);
-        cell.appendChild(mask);
-        grid.appendChild(cell);
-      });
-      $('mnemo-wrap').style.display = 'block';
-    }
+  /********** Step 4：PRF→HKDF → AES-GCM 加密并写库 **********/
+  $('btn-encrypt').onclick = async ()=>{
+    try{
+      if (!branches){ alert('请先生成助记词'); return; }
+      $('encrypt-tip').textContent = '请触摸密钥以继续…';
 
-    /** Step 1：生成助记词 & 内存导出分支 */
-    $('btn-gen').onclick = ()=>{
-      mnemonic = genMnemonic(128);           // 12 词
-      renderMnemonicOnce(mnemonic);
-      const seed = mnemonicToSeed(mnemonic, '');
-      branches = exportBranches(seed);       // 内存得到 xprv/xpub（BTC 为 z*）
-      $('gen-tip').textContent = '助记词已生成并显示一次；分支已在内存导出。';
-      $('btn-encrypt').disabled = false;
-      $('final-tip').textContent = '';
-    };
+      // 直接派生 KEK（若无凭证，fido2.js 内部会引导注册并重试）
+      const { kek, salt, rp_id, info, credential_id, toHex } = await deriveKEK();
 
-    /** Step 2：离线备份（强密码） */
-    $('want-backup').onchange = e=>{
-      $('backup-area').style.display = e.target.checked ? 'block' : 'none';
-      $('btn-backup').disabled = !e.target.checked;
-    };
-    $('pw1').oninput = $('pw2').oninput = ()=>{
-      const p1=$('pw1').value, p2=$('pw2').value;
-      if (!p1 && !p2){ $('pw-tip').textContent=''; $('btn-backup').disabled=true; return; }
-      if (p1!==p2){ $('pw-tip').innerHTML='<span class="err">两次密码不一致</span>'; $('btn-backup').disabled=true; return; }
-      const v = validatePasswordStrict(p1);
-      if (!v.ok){ $('pw-tip').innerHTML='<span class="err">'+v.reason+'</span>'; $('btn-backup').disabled=true; return; }
-      $('pw-tip').innerHTML='<span class="ok">密码强度通过</span>'; $('btn-backup').disabled=false;
-    };
-    $('btn-backup').onclick = async ()=>{
-      try{
-        if (!mnemonic){ alert('请先生成助记词'); return; }
-        const { blob } = await createPasswordBackupBlob(mnemonic, $('pw1').value);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a'); a.href=url; a.download='mnemonic_backup.enc.json'; a.click();
-        setTimeout(()=>URL.revokeObjectURL(url), 3000);
-        $('pw-tip').innerHTML = '<span class="ok">已生成并下载离线备份。</span>';
-      }catch(e){ $('pw-tip').innerHTML='<span class="err">备份失败：'+(e?.message||e)+'</span>'; console.error(e); }
-    };
-
-    /** Step 3：注册/复用 FIDO2（不阻塞下一步） */
-    $('btn-register').onclick = async () => {
-      try {
-        const res = await ensureCredentialWithChoice();
-        if (res?.created) {
-          $('reg-tip').innerHTML = '<span class="ok">已注册新凭证。</span>';
-        } else {
-          $('reg-tip').innerHTML = `<span class="ok">已选择凭证（id: ${res.id_hex.slice(0,16)}…）。</span>`;
+      const enc = async s => s ? await aesGcmEncryptStr(kek, s) : null;
+      const bundle = {
+        KEKInfo:{ rp_id, info, salt: toHex(salt), credential_id },
+        chains:{
+          ETH:  { path: branches.ETH.path,  PubEnc: await enc(branches.ETH.xpub),   PrivEnc: await enc(branches.ETH.xprv) },
+          BTC:  { path: branches.BTC.path,  PubEnc: await enc(branches.BTC.xpub_z), PrivEnc: await enc(branches.BTC.xprv_z) },
+          EOS:  { path: branches.EOS.path,  PubEnc: await enc(branches.EOS.xpub),   PrivEnc: await enc(branches.EOS.xprv) },
+          TRON: { path: branches.TRON.path, PubEnc: await enc(branches.TRON.xpub),  PrivEnc: await enc(branches.TRON.xprv) },
         }
-      } catch (e) {
-        $('reg-tip').innerHTML = '<span class="err">注册/复用失败：' + (e?.message||e) + '</span>';
-        console.error(e);
-      }
-    };
+      };
 
-    /** Step 4：PRF→HKDF 得 KEK → AES-GCM 加密 → 直接写库 */
-    $('btn-encrypt').onclick = async () => {
-      try {
-        if (!branches){ alert('请先生成助记词'); return; }
-        $('encrypt-tip').textContent='请触摸密钥以继续…';
+      $('encrypt-tip').textContent='正在写入数据库…';
+      const ret = await saveBundleToDB(bundle, { user_id:'web-ui', note:'初始化保存（UI）' });
 
-        // 自动注册兜底：没有凭证时会引导创建
-        const { kek, salt, rp_id, info, credential_id, toHex } = await deriveKEK({ autoRegister:true });
+      // 安全清理
+      mnemonic = '';
+      branches.ETH.xprv=null; branches.BTC.xprv_z=null; branches.EOS.xprv=null; branches.TRON.xprv=null;
 
-        const enc = async s => s ? await aesGcmEncryptStr(kek, s) : null;
-        const bundle = {
-          KEKInfo:{ rp_id, info, salt: toHex(salt), credential_id },
-          chains:{
-            ETH:  { path: branches.ETH.path,  PubEnc: await enc(branches.ETH.xpub),   PrivEnc: await enc(branches.ETH.xprv) },
-            BTC:  { path: branches.BTC.path,  PubEnc: await enc(branches.BTC.xpub_z), PrivEnc: await enc(branches.BTC.xprv_z) },
-            EOS:  { path: branches.EOS.path,  PubEnc: await enc(branches.EOS.xpub),   PrivEnc: await enc(branches.EOS.xprv) },
-            TRON: { path: branches.TRON.path, PubEnc: await enc(branches.TRON.xpub),  PrivEnc: await enc(branches.TRON.xprv) },
-          }
-        };
-
-        $('encrypt-tip').textContent='正在写入数据库…';
-        const ret = await saveBundleToDB(bundle, { user_id:'web-ui', note:'初始化保存（UI）' });
-
-        // 安全：清除敏感引用
-        mnemonic = '';
-        branches.ETH.xprv=null; branches.BTC.xprv_z=null; branches.EOS.xprv=null; branches.TRON.xprv=null;
-
-        $('encrypt-tip').textContent='';
-        $('final-tip').innerHTML = `<span class="ok">注册成功！<br/>bundle_id = <code class="small">${ret.bundle_id}</code></span>`;
-      } catch (e) {
-        $('encrypt-tip').textContent='';
-        $('final-tip').innerHTML = `<span class="err">写入失败：${e?.message||e}</span>`;
-        console.error(e);
-      }
-    };
-
-    // 如果本地已有凭证缓存，给点提示（纯 UI 强化，可删）
-    const cached = loadCredHex?.();
-    if (cached) {
-      const el = document.createElement('div');
-      el.className = 'wrap'; el.style.maxWidth='980px'; el.style.padding='0 16px';
-      el.innerHTML = `<div class="muted" style="text-align:center">检测到本域凭证：<code class="small">${cached.slice(0,16)}…</code></div>`;
-      document.body.appendChild(el);
+      $('encrypt-tip').textContent='';
+      $('final-tip').innerHTML = `<span class="ok">注册成功！bundle_id=${ret.bundle_id}</span>`;
+    }catch(e){
+      $('encrypt-tip').textContent='';
+      $('final-tip').innerHTML = `<span class="err">写入失败：${e?.message||e}</span>`;
+      console.error(e);
     }
-  </script>
+  };
+</script>
 </body>
 </html>
