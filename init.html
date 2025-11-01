@@ -205,6 +205,7 @@
 
   /********** 小工具 **********/
   const $ = id => document.getElementById(id);
+
   async function saveBundleToDB(bundle, { user_id='web-ui', note='' } = {}) {
     const res = await fetch(`${API_BASE}/bundles`, {
       method: 'POST',
@@ -220,49 +221,40 @@
   let mnemonic = null;
   let branches = null;
 
-  /* ===== 统一遮挡控制 ===== */
+  /********** 统一遮挡控制（按当前 HTML 的 id） **********/
   let maskTimer = null;
   const DISPLAY_MS = 30_000; // 30 秒
 
   function applyMask() {
-    const box = $('mnemo-box');
-    if (!box) return;
-    box.classList.add('masked');
-    $('grid-mask').style.display = 'flex';
-    $('reveal-tip').style.display = 'none';
+    const mask = $('mnemo-mask');
+    if (!mask) return;
+    mask.style.display = 'flex';                    // 重新显示遮挡层
+    const btn = $('mnemo-toggle');
+    if (btn) btn.querySelector('span:nth-child(2)').textContent = '点击显示全部（30 秒）';
     clearTimeout(maskTimer);
   }
 
   function revealAll() {
-    const box = $('mnemo-box');
-    if (!box) return;
-    box.classList.remove('masked');     // 全部单词可见
-    $('grid-mask').style.display = 'none';
-
-    // 倒计时提示
-    const tip = $('reveal-tip');
-    tip.style.display = 'inline';
-    let left = DISPLAY_MS / 1000; // 秒
-    tip.textContent = `已显示，${left}s 后自动遮挡`;
+    const mask = $('mnemo-mask');
+    if (!mask) return;
+    mask.style.display = 'none';                    // 隐藏遮挡层，开始倒计时
     clearTimeout(maskTimer);
-    const tick = () => {
+    let left = DISPLAY_MS / 1000;
+    maskTimer = setTimeout(function tick () {
       left -= 1;
-      if (left <= 0) { applyMask(); return; }
-      tip.textContent = `已显示，${left}s 后自动遮挡`;
+      if (left <= 0) { applyMask(); return; }       // 到时恢复遮挡
       maskTimer = setTimeout(tick, 1000);
-    };
-    maskTimer = setTimeout(tick, 1000);
+    }, 1000);
   }
 
-  // 点击蒙层按钮 -> 一次性显示全部
-  document.addEventListener('click', (e)=>{
-    if (e.target.closest('#grid-mask')) revealAll();
-  });
+  // 遮挡层按钮：一次性显示全部助记词
+  $('mnemo-toggle').onclick = revealAll;
 
-  /* ===== 渲染助记词网格 ===== */
+  /********** 渲染助记词网格 **********/
   function renderMnemonicOnce(m){
     const words = m.trim().split(/\s+/);
-    const grid = $('mnemo-grid'); grid.innerHTML = '';
+    const grid = $('mnemo-grid');
+    grid.innerHTML = '';
     words.forEach((w,i)=>{
       const cell = document.createElement('div'); cell.className='cell';
       cell.innerHTML = `<span class="badge">${i+1}</span><span class="word">${w}</span>`;
@@ -288,6 +280,7 @@
     $('backup-area').style.display = e.target.checked ? 'block' : 'none';
     $('btn-backup').disabled = !e.target.checked;
   };
+
   $('pw1').oninput = $('pw2').oninput = ()=>{
     const p1=$('pw1').value, p2=$('pw2').value;
     if (!p1 && !p2){ $('pw-tip').textContent=''; $('btn-backup').disabled=true; return; }
@@ -296,6 +289,7 @@
     if (!v.ok){ $('pw-tip').innerHTML='<span class="err">'+v.reason+'</span>'; $('btn-backup').disabled=true; return; }
     $('pw-tip').innerHTML='<span class="ok">密码强度通过</span>'; $('btn-backup').disabled=false;
   };
+
   $('btn-backup').onclick = async ()=>{
     try{
       if (!mnemonic){ alert('请先生成助记词'); return; }
@@ -358,5 +352,6 @@
     }
   };
 </script>
+
 </body>
 </html>
