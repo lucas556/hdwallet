@@ -3,117 +3,188 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>助记词展示一次 + FIDO2 加密（统一遮挡 + 30 秒自动恢复）</title>
+  <title>助记词展示一次 + FIDO2 加密（仅 HTML/CSS）</title>
   <style>
-    :root{--bg:#0b1220;--tx:#e5e7eb;--mut:#94a3b8;--card:#0f172a;--btn:#111827;--ok:#10b981;--err:#ef4444;--line:#1f2937}
-    html,body{background:#0b1220;color:var(--tx);font-family:system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
-    .wrap{max-width:980px;margin:28px auto;padding:0 16px}
-    h1{font-size:22px;margin:0 0 10px}
-    .muted{color:var(--mut)}
-    .row{margin:14px 0}
-    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 16px}
-    button{padding:10px 16px;border-radius:12px;border:0;background:var(--btn);color:#fff;cursor:pointer}
+    :root{
+      --bg:#0b1220;
+      --card:#111827;
+      --line:#1f2937;
+      --text:#e5e7eb;
+      --muted:#9ca3af;
+      --accent:#60a5fa;
+      --good:#10b981;
+      --bad:#ef4444;
+    }
+    html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif;}
+    a{color:var(--accent);text-decoration:none}
+    .wrap{max-width:1000px;margin:32px auto;padding:0 18px}
+
+    /* 卡片与分组 */
+    .section{margin-bottom:28px}
+    .section-title{margin:0 0 10px;font-size:16px;color:#cbd5e1}
+    .card{
+      background:var(--card);
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:20px 18px;
+      box-shadow:0 6px 18px rgb(0 0 0 / 16%);
+    }
+    .card + .card{margin-top:18px}
+    .divider{height:1px;background:#1f2937;margin:18px -6px}
+
+    /* 行/控件 */
+    .row{margin:16px 0}
+    .muted{color:var(--muted)}
+    button{
+      background:#0f172a;border:1px solid #27324a;color:#e5e7eb;
+      padding:12px 18px;border-radius:12px;cursor:pointer;
+    }
+    button:hover{background:#111d34}
     button[disabled]{opacity:.5;cursor:not-allowed}
-    input[type="password"]{padding:10px 12px;border-radius:10px;border:1px solid #334155;background:#0b1220;color:#e2e8f0}
-    .ok{color:var(--ok)} .err{color:var(--err)}
+    input[type="password"]{
+      background:#0f172a;border:1px solid #27324a;border-radius:10px;
+      padding:10px 12px;color:#e5e7eb;min-width:220px;
+    }
+    label{user-select:none}
 
     /* 助记词网格 */
-    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-    .cell{background:#0b1220;border:1px solid #1f2937;border-radius:12px;padding:12px 14px;position:relative}
-    .badge{display:inline-block;background:#1f2937;color:#cbd5e1;border-radius:999px;padding:2px 8px;margin-right:10px;font-size:12px}
-    .word{letter-spacing:.5px}
-
-    /* 统一遮挡容器 */
-    .mnemo-box{position:relative;margin-top:8px}
-    .mnemo-box.masked .word{opacity:0} /* 彻底隐藏文字，防“透字” */
-
-    /* 覆盖整个网格的实心蒙层（点击一次显示全部） */
-    .grid-mask{
-      position:absolute; inset:0; display:flex; flex-direction:column;
-      align-items:center; justify-content:center; text-align:center;
-      background:#0b1220; /* 实心背景完全遮住 */
-      border:1px solid #1f2937;border-radius:12px;
-      gap:10px; padding:16px; cursor:pointer; user-select:none
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .cell{
+      border:1px dashed #334155;border-radius:12px;padding:12px 10px;
+      background:repeating-linear-gradient(
+        -45deg,#0f172a,#0f172a 10px,#0d1526 10px,#0d1526 20px
+      );
+      display:flex;align-items:center;gap:10px;min-height:40px;
     }
-    .grid-mask .btn{display:inline-flex;align-items:center;gap:8px;
-      background:#111827;color:#fff;border-radius:999px;padding:10px 14px}
-    .grid-mask .muted{color:#94a3b8}
-    .grid-mask .eye{width:18px;height:18px;border:2px solid #fff;border-radius:50%;position:relative}
-    .grid-mask .eye:after{content:'';position:absolute;left:50%;top:50%;
-      width:6px;height:6px;background:#fff;border-radius:50%;transform:translate(-50%,-50%)}
-    .reveal-tip{margin-left:8px;color:#94a3b8}
+    .badge{display:inline-grid;place-items:center;width:26px;height:26px;
+      border-radius:999px;background:#0b1328;border:1px solid #1d2a44;color:#9fb4d9;font-size:12px}
+    .word{letter-spacing:.3px}
+
+    /* 统一遮挡蒙层（默认遮挡） */
+    .mnemo-box{position:relative}
+    .mnemo-mask{
+      position:absolute;inset:8px;display:flex;align-items:center;justify-content:center;
+      background:radial-gradient(ellipse at center, rgba(15,23,42,.78) 0%, rgba(2,6,23,.92) 100%);
+      border:1px dashed #334155;border-radius:14px;backdrop-filter:blur(6px);
+    }
+    .mnemo-btn{
+      display:flex;align-items:center;gap:10px;border-radius:999px;padding:10px 14px;
+      border:1px solid #1f2a44;background:#0b1328;color:#cfe1ff;cursor:pointer;
+      box-shadow:0 8px 24px rgba(0,0,0,.25);
+    }
+    .mnemo-btn .dot{width:8px;height:8px;border-radius:999px;background:#22d3ee;box-shadow:0 0 0 4px rgba(34,211,238,.15)}
+    .hint{margin-top:10px;text-align:center;color:#9aa4b4}
+
+    /* 结果提示 */
+    .ok{color:var(--good)} .err{color:var(--bad)}
+
+    /* 自适应 */
+    @media (max-width:640px){
+      .wrap{padding:0 14px}
+      .card{padding:16px 14px}
+      .grid{grid-template-columns:repeat(2,1fr)}
+    }
   </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>助记词展示一次 + FIDO2 加密（统一遮挡）</h1>
-  <div class="muted" style="margin-bottom:14px">
-    流程：① 生成助记词（默认<b>统一遮挡</b>） → 点击蒙层按钮一次性显示<b>全部</b>（30 秒） → 自动重新遮挡。<br>
-    可选：离线备份（PBKDF2+AES-GCM JSON）。最后使用 FIDO2 PRF 派生 KEK 加密 xprv/xpub 写入 D1。
-  </div>
 
   <!-- Step 1 -->
-  <div class="card">
-    <div class="row">
-      <button id="btn-gen">① 生成助记词（显示一次）</button>
-      <span id="gen-tip" class="muted">未生成</span>
+  <section class="section">
+    <h2 class="section-title">① 生成助记词</h2>
+
+    <!-- 操作卡：生成按钮 & 提示 -->
+    <div class="card">
+      <div class="row">
+        <button id="btn-gen">生成助记词（仅显示一次）</button>
+        <span id="gen-tip" class="muted" style="margin-left:10px">未生成</span>
+      </div>
+      <div class="muted">点击后会在内存中导出各链分支（xprv/xpub 或 z*），默认不展示助记词；可手动点击按钮统一显示 30 秒。</div>
     </div>
 
-    <div id="mnemo-wrap" class="row" style="display:none">
-      <div class="muted" style="margin-bottom:10px">
-        助记词默认<b>统一遮挡</b>。点击下方蒙层一次性显示<b>全部</b>，显示时长 <b>30 秒</b> 后会自动遮挡。
-      </div>
+    <!-- 展示卡：助记词网格 + 统一遮挡 -->
+    <div class="card" id="mnemo-container" style="display:none">
+      <div class="mnemo-box">
+        <div class="grid" id="mnemo-grid">
+          <!-- JS 动态填充 12/24 个 cell（保留占位结构便于样式预览） -->
+          <div class="cell"><span class="badge">1</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">2</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">3</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">4</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">5</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">6</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">7</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">8</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">9</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">10</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">11</span><span class="word">•••••</span></div>
+          <div class="cell"><span class="badge">12</span><span class="word">•••••</span></div>
+        </div>
 
-      <div id="mnemo-box" class="mnemo-box masked">
-        <div class="grid" id="mnemo-grid"></div>
-
-        <!-- 统一蒙层：点击一次显示所有 -->
-        <div id="grid-mask" class="grid-mask" title="点击显示全部 30 秒">
-          <div class="muted">助记词已生成，默认被遮挡</div>
-          <div class="btn">
-            <span class="eye" aria-hidden="true"></span>
-            <span>点击显示全部（30 秒）</span>
+        <!-- 统一遮挡蒙层（默认显示） -->
+        <div class="mnemo-mask" id="mnemo-mask">
+          <div>
+            <button class="mnemo-btn" id="mnemo-toggle">
+              <span class="dot"></span>
+              <span>点击显示全部（30 秒）</span>
+            </button>
+            <div class="hint">确保周围安全，避免旁观与屏幕录制</div>
           </div>
-          <div class="muted">确保周围安全，避免旁观与屏幕录制</div>
         </div>
       </div>
-
-      <div class="reveal-tip muted" id="reveal-tip" style="display:none"></div>
     </div>
-  </div>
+  </section>
 
-  <!-- Step 2 备份 -->
-  <div class="card">
-    <div class="row">
-      <label><input id="want-backup" type="checkbox"> 我要生成<b>离线加密备份</b>（JSON 文件）</label>
-    </div>
-    <div id="backup-area" class="row" style="display:none">
-      <div class="muted">密码需 ≥8，且必须包含：字母 + 数字 + 特殊字符。</div>
-      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-        <input id="pw1" type="password" placeholder="备份密码">
-        <input id="pw2" type="password" placeholder="再次输入">
-        <button id="btn-backup" disabled>生成并下载备份 JSON</button>
+  <div class="divider"></div>
+
+  <!-- Step 2 -->
+  <section class="section">
+    <h2 class="section-title">② 离线加密备份（JSON 文件，可选）</h2>
+    <div class="card">
+      <div class="row">
+        <label><input id="want-backup" type="checkbox"> 我要生成离线加密备份（JSON）</label>
       </div>
-      <div id="pw-tip" class="muted"></div>
-    </div>
-  </div>
 
-  <!-- Step 3 FIDO2 注册/复用 -->
-  <div class="card">
-    <div class="row">
-      <button id="btn-register">② 注册/复用 FIDO2 凭证</button>
-      <span id="reg-tip" class="muted"></span>
+      <div id="backup-area" style="display:none">
+        <div class="muted">密码需 ≥8 且包含：字母 + 数字 + 特殊字符。</div>
+        <div class="row" style="display:flex;gap:10px;flex-wrap:wrap">
+          <input id="pw1" type="password" placeholder="备份密码">
+          <input id="pw2" type="password" placeholder="再次输入">
+          <button id="btn-backup" disabled>生成并下载备份 JSON</button>
+        </div>
+        <div id="pw-tip" class="muted"></div>
+      </div>
     </div>
-  </div>
+  </section>
 
-  <!-- Step 4 加密并写库 -->
-  <div class="card">
-    <div class="row">
-      <button id="btn-encrypt" disabled>③ 加密分支并写入数据库</button>
-      <span id="encrypt-tip" class="muted"></span>
+  <div class="divider"></div>
+
+  <!-- Step 3 -->
+  <section class="section">
+    <h2 class="section-title">③ 注册/复用 FIDO2 凭证</h2>
+    <div class="card">
+      <div class="row">
+        <button id="btn-register">注册/复用 FIDO2 凭证</button>
+        <span id="reg-tip" class="muted" style="margin-left:10px"></span>
+      </div>
     </div>
-    <div id="final-tip" class="row muted"></div>
-  </div>
+  </section>
+
+  <div class="divider"></div>
+
+  <!-- Step 4 -->
+  <section class="section">
+    <h2 class="section-title">④ 加密分支并写入数据库</h2>
+    <div class="card">
+      <div class="row">
+        <button id="btn-encrypt" disabled>加密分支并写入数据库</button>
+        <span id="encrypt-tip" class="muted" style="margin-left:10px"></span>
+      </div>
+
+      <div class="row muted" id="final-tip"></div>
+    </div>
+  </section>
+
 </div>
 
 <script type="module">
