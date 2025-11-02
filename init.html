@@ -114,6 +114,13 @@ function showMask(){ $('mnemo-mask').style.display='flex'; }
 function hideMask(){ $('mnemo-mask').style.display='none'; }
 function resetAutoMask(){ if(autoMaskTimer){ clearTimeout(autoMaskTimer); autoMaskTimer=null; } }
 
+async function queryBundlesByCred(credHex) {
+  const resp = await fetch(`${API_BASE}/bundles/by-cred/${credHex}`, { method: 'GET' });
+  const data = await resp.json().catch(()=> ({}));
+  if (!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+  return data; // { ok:true, count, items: [...] }
+}
+
 /* 步骤 A：选择/注册凭证（并锁定） */
 $('btn-register').onclick = async ()=>{
   const tip=$('reg-tip');
