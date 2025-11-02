@@ -113,7 +113,7 @@
   </div>
 
 <script type="module">
-/* ===== 依赖：与你现有 fido2.js / hdwallet-core.js 对齐 ===== */
+/* ===== 依赖 ===== */
 import {
   ensureCredentialWithChoice,
   deriveKEK,
@@ -123,60 +123,60 @@ import {
   loadCredHex,
 } from './js/fido2.js';
 
-import {
-  genMnemonic, mnemonicToSeed, exportBranches,
-} from './js/hdwallet-core.js';
+import { genMnemonic, mnemonicToSeed, exportBranches } from './js/hdwallet-core.js';
 
 /* ===== 常量与状态 ===== */
-const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';
+const API_BASE   = 'https://wallet.lucas-l-shang.workers.dev';
+const GRACE_MS   = 120_000; // 首次显示后 2 分钟窗口
+const HOLD_MS    = 3_000;   // 蒙层长按 3 秒
+const REVEAL_MS  = 30_000;  // 之后每次显示 30 秒
 
-const GRACE_MS   = 120_000;      // “首次显示后”2 分钟窗口
-const HOLD_MS    = 3_000;        // 蒙层长按 3 秒
+let branches = null;
+let sealed   = null;        // { ctHex, ivHex, saltHex, credId, ... }
+let plainMnemonic = '';     // 仅窗口期保存
+let wordCount = 12;
 
-let branches = null;             // 各链分支（用于写库）
-let sealed   = null;             // { ctHex, ivHex, saltHex, credId }
-let plainMnemonic = '';          // 明文助记词（仅在窗口期保存）
-let wordCount   = 12;
+let graceTimer = null;      // 首显 2min 计时器
+let autoMaskTimer = null;   // 解密显示 30s 计时器
+let graceStarted = false;   // 首次显示后才置 true
 
-let graceTimer  = null;          // 2 分钟窗口计时器
-let graceStarted = false;        // 是否已经启动过窗口（只启动一次）
-
-/* ===== DOM 快捷 ===== */
-const $ = (id)=>document.getElementById(id);
-
-/* ===== 工具：渲染网格 & 遮挡控制 ===== */
+/* ===== DOM ===== */
+const $ = id => document.getElementById(id);
+function showCard(){ const c=$('mnemo-card'); if(c)c.style.display='block'; }
+function showMask(){ const m=$('mnemo-mask'); if(m)m.style.display='flex'; }
+function hideMask(){ const m=$('mnemo-mask'); if(m)m.style.display='none'; }
 function renderGrid(words){
-  const grid = $('mnemo-grid'); if (!grid) return;
+  const grid=$('mnemo-grid'); if(!grid) return;
   grid.innerHTML='';
   words.forEach((w,i)=>{
-    const d = document.createElement('div'); d.className='cell';
-    d.innerHTML = `<span class="badge">${i+1}</span><span class="word">${w}</span>`;
+    const d=document.createElement('div'); d.className='cell';
+    d.innerHTML=`<span class="badge">${i+1}</span><span class="word">${w}</span>`;
     grid.appendChild(d);
   });
 }
 function renderMaskedGrid(n){ renderGrid(Array.from({length:n},()=> '•••••')); }
 
-function showCard(){ const c=$('mnemo-card'); if(c)c.style.display='block'; }
-function showMask(){ const m=$('mnemo-mask'); if(m)m.style.display='flex'; }
-function hideMask(){ const m=$('mnemo-mask'); if(m)m.style.display='none'; }
-
 function clearGraceTimer(){ if(graceTimer){ clearTimeout(graceTimer); graceTimer=null; } }
+function clearAutoMask(){ if(autoMaskTimer){ clearTimeout(autoMaskTimer); autoMaskTimer=null; } }
 
-/* ===== 按钮状态 ===== */
-function enableGen(on=true){ const b=$('btn-gen'); if(b) b.disabled=!on; }
-function enableEncrypt(on=true){ const b=$('btn-encrypt'); if(b) b.disabled=!on; }
+function maskNow(note=''){
+  // 统一遮挡当前网格
+  renderMaskedGrid(wordCount);
+  showMask();
+  if(note){ const hint=$('mask-hint'); if(hint) hint.textContent=note; }
+}
 
-/* ===== 初始化：若已有凭证，允许生成 ===== */
+/* ===== 初始：若已有凭证，允许生成 ===== */
 document.addEventListener('DOMContentLoaded', ()=>{
   try{
     if(loadCredHex()){
-      enableGen(true);
-      const tip=$('reg-tip'); if(tip) tip.innerHTML='<span class="ok">已可使用凭证（本地已存在）。</span>';
+      const tip=$('reg-tip'); if(tip) tip.innerHTML='<span class="ok">已可使用凭证（本地有凭证）。</span>';
+      const b=$('btn-gen'); if(b) b.disabled=false;
     }
   }catch{}
 });
 
-/* ===== A. 注册/复用 FIDO2 ===== */
+/* ===== 注册/复用 FIDO2 ===== */
 $('btn-register').onclick = async ()=>{
   const tip=$('reg-tip');
   try{
@@ -186,44 +186,44 @@ $('btn-register').onclick = async ()=>{
         ? '<span class="ok">已注册新凭证。</span>'
         : `<span class="ok">已可使用凭证（id: ${(res?.id_hex||'').slice(0,16)}…）。</span>`;
     }
-    enableGen(true);
+    $('btn-gen').disabled=false;
   }catch(e){
     if(tip) tip.innerHTML=`<span class="err">注册/复用失败：${e?.message||e}</span>`;
     console.error(e);
   }
 };
 
-/* ===== B. 生成助记词（默认整块遮挡；“首次显示后”才启动 2 分钟窗口） ===== */
+/* ===== 生成助记词（默认整块遮挡；首显后才计 2 分钟） ===== */
 $('btn-gen').onclick = async ()=>{
   const tip=$('gen-tip');
   try{
-    // 1) 生成助记词 + 分支
+    // 1) 生成 + 分支
     const mnemonic = genMnemonic(128);
     const words    = mnemonic.trim().split(/\s+/);
     wordCount      = words.length || 12;
     const seed     = mnemonicToSeed(mnemonic,'');
     branches       = exportBranches(seed);
-    enableEncrypt(true);
+    $('btn-encrypt').disabled=false;
 
-    // 2) 立刻用 FIDO2 派生 KEK 加密（sealed）；但此时“窗口尚未启动”
+    // 2) 立即用 FIDO2 加密，得 sealed
     const { kek, salt, rp_id, info, credential_id, toHex } = await deriveKEK();
     const enc = await aesGcmEncryptStr(kek, mnemonic);
     sealed = { ctHex: enc.ciphertext, ivHex: enc.nonce, saltHex: toHex(salt), credId: credential_id, rp_id, info };
 
-    // 3) 明文先留在内存（等待用户第一次解锁后再启动 2 分钟窗口）
+    // 3) 明文暂存（尚未首显，不启动 2min 计时）
     plainMnemonic = mnemonic;
     graceStarted  = false;
     clearGraceTimer();
+    clearAutoMask();
 
-    // 4) UI：显示卡片 + 整块遮挡（首次默认遮挡）
+    // 4) UI：显示卡片并整块遮挡
     showCard();
     renderMaskedGrid(wordCount);
     showMask();
-    $('hold-text').textContent = '长按 3 秒显示助记词';
-    $('mask-hint').textContent = '默认遮挡。第一次显示后将开始 2 分钟窗口，到点会自动遮挡并清空明文。';
+    $('hold-text').textContent='长按 3 秒显示助记词';
+    $('mask-hint').textContent='默认遮挡。首次显示后将开始 2 分钟窗口，到点会自动遮挡并清空明文。';
     tip.textContent='';
-
-    // 5) 安全擦除局部 words 数组副本（尽量减少可被抓取的字符串副本）
+    // 擦 words 副本
     try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
   }catch(e){
     if(tip) tip.innerHTML=`<span class="err">生成失败：${e?.message||e}</span>`;
@@ -231,32 +231,27 @@ $('btn-gen').onclick = async ()=>{
   }
 };
 
-/* ===== B. 蒙层长按 3 秒：显示助记词 =====
-   - 若 plainMnemonic 存在：直接显示；若这是“首次显示”，此刻启动 2 分钟窗口；
-   - 若 plainMnemonic 不在：走 FIDO2 解密后显示（不再开启窗口）。 */
-(function bindHoldToReveal(){
-  const btn = $('hold-btn'), bar = $('hold-bar'), text=$('hold-text');
+/* ===== 长按 3 秒显示：首显 vs 解密 ===== */
+(function bindHold(){
+  const btn=$('hold-btn'), bar=$('hold-bar'), text=$('hold-text');
   if(!btn||!bar) return;
 
   let pressing=false, t0=0, rafId=0, timerId=0;
 
   const start = ()=>{
     if(pressing) return;
-    pressing=true; t0=performance.now();
-    bar.style.width='0%';
-
-    const step = ()=>{
+    pressing=true; t0=performance.now(); bar.style.width='0%';
+    const step=()=>{
       if(!pressing) return;
-      const p = Math.min(1, (performance.now()-t0)/HOLD_MS);
-      bar.style.width = (p*100).toFixed(1)+'%';
+      const p=Math.min(1,(performance.now()-t0)/HOLD_MS);
+      bar.style.width=(p*100).toFixed(1)+'%';
       if(p>=1){ done(); return; }
-      rafId = requestAnimationFrame(step);
+      rafId=requestAnimationFrame(step);
     };
-    rafId = requestAnimationFrame(step);
-    timerId = setTimeout(done, HOLD_MS);
+    rafId=requestAnimationFrame(step);
+    timerId=setTimeout(done,HOLD_MS);
   };
-
-  const cancel = ()=>{
+  const cancel=()=>{
     pressing=false;
     if(rafId) cancelAnimationFrame(rafId);
     if(timerId) clearTimeout(timerId);
@@ -265,15 +260,13 @@ $('btn-gen').onclick = async ()=>{
 
   const startGraceIfFirstReveal = ()=>{
     if(!graceStarted){
-      graceStarted = true;
+      graceStarted=true;
       clearGraceTimer();
-      graceTimer = setTimeout(()=>{
-        // 到点：遮挡 + 清空明文
-        plainMnemonic = '';
-        renderMaskedGrid(wordCount);
-        showMask();
-        const hint = $('mask-hint');
-        if(hint) hint.textContent = '2 分钟窗口已结束。再次显示需要 FIDO2。';
+      graceTimer=setTimeout(()=>{
+        // 2 分钟到：遮挡 + 清空明文
+        plainMnemonic='';
+        clearAutoMask();
+        maskNow('2 分钟窗口已结束。再次显示需要 FIDO2。');
       }, GRACE_MS);
     }
   };
@@ -281,23 +274,32 @@ $('btn-gen').onclick = async ()=>{
   const done = async ()=>{
     cancel();
     try{
-      let mnemonic;
+      let mnemonic, mode;
+      clearAutoMask(); // 每次显示先清前一个 30s 计时
+
       if(plainMnemonic){
-        // 窗口内（或首次显示之前）：不用 FIDO2
+        // 首显（或窗口内再次查看）：不用 FIDO2
         mnemonic = plainMnemonic;
-        startGraceIfFirstReveal();   // 首次显示时启动窗口
+        mode = 'plain';
+        startGraceIfFirstReveal(); // 只有“首次成功显示”才开启 2min
       }else{
-        // 需要 FIDO2 解密
+        // 窗口外：FIDO2 解密
         const { kek } = await deriveKEKWithSalt(sealed.saltHex, sealed.credId);
         mnemonic = await aesGcmDecryptStr(kek, sealed.ivHex, sealed.ctHex);
-        // 出于更严格策略：FIDO2 解密后的显示，不再开启新的窗口
+        mode = 'decrypted';
       }
 
       const words = mnemonic.trim().split(/\s+/);
       renderGrid(words);
       hideMask();
 
-      // 不再做 30 秒自动遮挡；由 2 分钟窗口结束时统一遮挡 & 清明文
+      // 计时：首显=2min(已在上面布置)；解密=30s 自动遮挡
+      if(mode==='decrypted'){
+        autoMaskTimer=setTimeout(()=>{
+          maskNow('已自动遮挡。再次显示仍需 FIDO2。');
+        }, REVEAL_MS);
+      }
+      // 尽量擦局部副本
       try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
     }catch(e){
       console.error(e);
@@ -306,12 +308,11 @@ $('btn-gen').onclick = async ()=>{
     }
   };
 
-  // 鼠标/触摸都支持长按
-  ['mousedown','touchstart'].forEach(ev=>btn.addEventListener(ev, start));
-  ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev=>btn.addEventListener(ev, cancel));
+  ['mousedown','touchstart'].forEach(ev=>btn.addEventListener(ev,start));
+  ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev=>btn.addEventListener(ev,cancel));
 })();
 
-/* ===== C. 加密并写库（保持原逻辑） ===== */
+/* ===== 写库（未改） ===== */
 $('btn-encrypt').onclick = async ()=>{
   const tip=$('encrypt-tip');
   try{
@@ -338,7 +339,6 @@ $('btn-encrypt').onclick = async ()=>{
     if(!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
     tip.textContent='';
-    // 清理最敏感的私钥副本
     branches.ETH.xprv = branches.EOS.xprv = branches.TRON.xprv = null;
     branches.BTC.xprv_z = null;
     alert(`写入成功：bundle_id=${data.bundle_id}`);
