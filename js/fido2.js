@@ -1,49 +1,61 @@
-// public/js/fido2.js  — 安全兜底版（不会在模块顶层抛错）
+// js/fido2.js — 与 init.html 对齐的完整版本
+// 提供这些导出：
+// ensureCredentialWithChoice, deriveKEK, deriveKEKWithSalt,
+// aesGcmEncryptStr, aesGcmDecryptStr
+
 const RP_ID   = location.hostname;
 const RP_NAME = 'HD Wallet Init';
 const USER_NAME = 'local-user';
 const STORAGE_KEY = 'fido2_cred_hex';
 
-export function loadCredHex() { try { return localStorage.getItem(STORAGE_KEY) || null; } catch { return null; } }
-export function saveCredHex(hex) { try { localStorage.setItem(STORAGE_KEY, hex); } catch {} }
-export function clearCredHex() { try { localStorage.removeItem(STORAGE_KEY); } catch {} }
-
-function ab2hex(buf){ const b=new Uint8Array(buf); let s=''; for(const x of b) s+=x.toString(16).padStart(2,'0'); return s; }
-function hex2ab(hex){ const s=hex.replace(/^0x/i,''); const out=new Uint8Array(s.length/2); for(let i=0;i<out.length;i++) out[i]=parseInt(s.slice(i*2,i*2+2),16); return out.buffer; }
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-// 便捷：hex <-> Uint8Array
-function hexToU8(h){ h=h.replace(/^0x/i,''); const u=new Uint8Array(h.length/2); for(let i=0;i<u.length;i++) u[i]=parseInt(h.slice(i*2,i*2+2),16); return u; }
-function u8ToHex(u){ return [...u].map(b=>b.toString(16).padStart(2,'0')).join(''); }
+/* ---------- 小工具 ---------- */
+function ab2hex(buf) {
+  const b = new Uint8Array(buf);
+  let s = '';
+  for (const x of b) s += x.toString(16).padStart(2, '0');
+  return s;
+}
+function hex2ab(hex) {
+  const s = hex.replace(/^0x/i, '');
+  if (s.length % 2) throw new Error('bad hex');
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i*2, i*2+2), 16);
+  return out.buffer;
+}
+function hex2u8(hex) { return new Uint8Array(hex2ab(hex)); }
+function u8tohex(u8) { return ab2hex(u8.buffer); }
 
-async function safeCredentialsGet(opts) {
-  if (!('credentials' in navigator) || !navigator.credentials?.get) {
+/* ---------- 本地缓存凭证 id（十六进制） ---------- */
+export function loadCredHex()  { try { return localStorage.getItem(STORAGE_KEY) || null; } catch { return null; } }
+export function saveCredHex(h) { try { localStorage.setItem(STORAGE_KEY, h); } catch {} }
+export function clearCredHex() { try { localStorage.removeItem(STORAGE_KEY); } catch {} }
+
+/* ---------- WebAuthn 安全封装 ---------- */
+async function safeGet(opts) {
+  if (!('credentials' in navigator) || !navigator.credentials?.get)
     throw new Error('WebAuthn not supported in this browser.');
-  }
-  if (opts && 'mediation' in opts) delete opts.mediation; // 某些浏览器不认识 mediation
-  try { return await navigator.credentials.get(opts); }
-  catch (e) { return Promise.reject(e); }
+  if (opts && 'mediation' in opts) delete opts.mediation;
+  return navigator.credentials.get(opts);
+}
+async function safeCreate(opts) {
+  if (!('credentials' in navigator) || !navigator.credentials?.create)
+    throw new Error('WebAuthn not supported in this browser.');
+  return navigator.credentials.create(opts);
 }
 
-async function safeCredentialsCreate(opts) {
-  if (!('credentials' in navigator) || !navigator.credentials?.create) {
-    throw new Error('WebAuthn not supported in this browser.');
-  }
-  try { return await navigator.credentials.create(opts); }
-  catch (e) { return Promise.reject(e); }
-}
-
-// 尝试发现已有凭证（失败就返回 null，绝不在顶层 throw）
+/* ---------- 发现已有可用凭证（失败返回 null） ---------- */
 async function tryDiscoverExistingCredential() {
   try {
-    const cred = await safeCredentialsGet({
+    const cred = await safeGet({
       publicKey: {
         rpId: RP_ID,
         userVerification: 'preferred',
         challenge: crypto.getRandomValues(new Uint8Array(32)),
         timeout: 60000
-        // 不设 allowCredentials：让设备枚举可发现凭证
+        // 不指定 allowCredentials 以允许枚举 resident credentials
       }
     });
     if (cred && cred.id) {
@@ -51,13 +63,11 @@ async function tryDiscoverExistingCredential() {
       saveCredHex(idHex);
       return idHex;
     }
-  } catch (_) {
-    // 可能出现“not registered with this website”等，忽略当作无
-  }
+  } catch (_) {}
   return null;
 }
 
-// 注册新凭证（resident key + PRF 探测）
+/* ---------- 注册新凭证（需要支持 PRF） ---------- */
 export async function registerNewCredential() {
   const userId = crypto.getRandomValues(new Uint8Array(16));
   const pubKey = {
@@ -65,21 +75,22 @@ export async function registerNewCredential() {
     user: { id: userId, name: USER_NAME, displayName: USER_NAME },
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     pubKeyCredParams: [
-      { alg: -7, type: 'public-key' },   // ES256
-      { alg: -8, type: 'public-key' },   // Ed25519
-      { alg: -257, type: 'public-key' }  // RS256
+      { alg: -7,   type: 'public-key' },   // ES256
+      { alg: -8,   type: 'public-key' },   // Ed25519
+      { alg: -257, type: 'public-key' }    // RS256
     ],
     authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
     attestation: 'none',
+    // 触发 PRF 探测
     extensions: { prf: { eval: { first: new Uint8Array(32) } } }
   };
-  const cred = await safeCredentialsCreate({ publicKey: pubKey });
+  const cred = await safeCreate({ publicKey: pubKey });
   const idHex = ab2hex(cred.rawId);
   saveCredHex(idHex);
   return { created: true, id_hex: idHex };
 }
 
-// 有则用，无则注册；如发现旧的也可让用户选择新建
+/* ---------- 有则用，无则询问/注册 ---------- */
 export async function ensureCredentialWithChoice() {
   const cached = loadCredHex();
   if (cached) return { ok: true, id_hex: cached, created: false };
@@ -94,8 +105,9 @@ export async function ensureCredentialWithChoice() {
   return { ok: true, id_hex: reg.id_hex, created: true };
 }
 
+/* ---------- PRF + HKDF 生成 AES-GCM KEK（给定 cred 与 salt） ---------- */
 async function deriveKEKWithIdHex(credHex, saltU8, infoStr) {
-  const cred = await safeCredentialsGet({
+  const cred = await safeGet({
     publicKey: {
       rpId: RP_ID,
       userVerification: 'preferred',
@@ -106,28 +118,24 @@ async function deriveKEKWithIdHex(credHex, saltU8, infoStr) {
     }
   });
 
-  const getExt = typeof cred.getClientExtensionResults === 'function'
+  const ext = typeof cred.getClientExtensionResults === 'function'
     ? cred.getClientExtensionResults()
     : {};
-  const prfRes = getExt?.prf?.results?.first;
+  const prfRes = ext?.prf?.results?.first;
   if (!prfRes) throw new Error('This security key does not support PRF.');
 
-  const keyMaterial = await crypto.subtle.importKey('raw', prfRes, { name: 'HKDF' }, false, ['deriveBits']);
+  const keyMat = await crypto.subtle.importKey('raw', prfRes, { name: 'HKDF' }, false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits(
     { name: 'HKDF', hash: 'SHA-256', salt: saltU8, info: enc.encode(infoStr) },
-    keyMaterial, 256
+    keyMat, 256
   );
-  const kek = await crypto.subtle.importKey('raw', new Uint8Array(bits), 'AES-GCM', false, ['encrypt','decrypt']);
-  return kek;
+  return crypto.subtle.importKey('raw', new Uint8Array(bits), 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-/**
- * deriveKEK({ autoRegister = true, saltHex? })
- * - 默认生成随机 salt；传入 saltHex 可复用既有盐（例如解密已存密文）
- */
-export async function deriveKEK({ autoRegister = true, saltHex = null } = {}) {
+/* ---------- 导出：派生新 KEK（随机 salt） ---------- */
+export async function deriveKEK({ autoRegister = true } = {}) {
   const info = 'wallet-priv-bundle-v1';
-  const salt = saltHex ? hexToU8(saltHex) : crypto.getRandomValues(new Uint8Array(32));
+  const salt = crypto.getRandomValues(new Uint8Array(32));
 
   let credHex = loadCredHex();
   if (!credHex) {
@@ -143,8 +151,12 @@ export async function deriveKEK({ autoRegister = true, saltHex = null } = {}) {
   try {
     const kek = await deriveKEKWithIdHex(credHex, salt, info);
     return {
-      kek, salt, rp_id: RP_ID, info, credential_id: credHex,
-      toHex: u8ToHex
+      kek,
+      salt,
+      rp_id: RP_ID,
+      info,
+      credential_id: credHex,
+      toHex: (u8) => u8tohex(new Uint8Array(u8))
     };
   } catch (e) {
     const msg = (e && (e.message || e.name || '')) + '';
@@ -154,26 +166,42 @@ export async function deriveKEK({ autoRegister = true, saltHex = null } = {}) {
       const reg = await registerNewCredential();
       const kek = await deriveKEKWithIdHex(reg.id_hex, salt, info);
       return {
-        kek, salt, rp_id: RP_ID, info, credential_id: reg.id_hex,
-        toHex: u8ToHex
+        kek,
+        salt,
+        rp_id: RP_ID,
+        info,
+        credential_id: reg.id_hex,
+        toHex: (u8) => u8tohex(new Uint8Array(u8))
       };
     }
     throw e;
   }
 }
 
-// AES-GCM 加密/解密（字符串）
+/* ---------- 新增导出：使用已知 salt/cred 重新派生 KEK（用于解密时） ---------- */
+export async function deriveKEKWithSalt(saltHex, credentialHex) {
+  const info = 'wallet-priv-bundle-v1';
+  const credHex = credentialHex || loadCredHex();
+  if (!credHex) throw new Error('No credential id for KEK re-derivation.');
+  const saltU8 = hex2u8(saltHex);
+  const kek = await deriveKEKWithIdHex(credHex, saltU8, info);
+  return { kek, rp_id: RP_ID, info, credential_id: credHex };
+}
+
+/* ---------- AES-GCM 封装（字符串） ---------- */
 export async function aesGcmEncryptStr(key, text) {
   if (!text) return null;
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(text));
-  return { nonce: u8ToHex(iv), ciphertext: u8ToHex(new Uint8Array(ct)) };
+  return {
+    nonce: u8tohex(iv),
+    ciphertext: u8tohex(new Uint8Array(ct))
+  };
 }
 
-export async function aesGcmDecryptStr(key, { nonce, ciphertext }) {
-  if (!ciphertext) return '';
-  const iv = hexToU8(nonce);
-  const ct = hexToU8(ciphertext);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
-  return dec.decode(pt);
+export async function aesGcmDecryptStr(key, ivHex, ctHex) {
+  const iv = hex2u8(ivHex);
+  const ct = hex2u8(ctHex);
+  const ptBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  return dec.decode(ptBuf);
 }
