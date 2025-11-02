@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>进入钱包 · FIDO2 验证</title>
+  <style>
+    :root{ --bg:#0b1220; --card:#0f1724; --text:#e5e7eb; --muted:#94a3b8; --accent:#60a5fa; --bad:#ef4444; --good:#10b981; }
+    html,body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif;}
+    .wrap{max-width:880px;margin:48px auto;padding:0 18px}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:24px;box-shadow:0 12px 32px rgba(0,0,0,.35)}
+    h1{margin:0 0 8px}
+    .muted{color:var(--muted)}
+    .row{display:flex;align-items:center;gap:12px;margin-top:14px}
+    button{background:linear-gradient(180deg,#0f172a,#091427);border:1px solid rgba(255,255,255,.1);color:var(--text);
+      padding:12px 18px;border-radius:12px;cursor:pointer}
+    button:hover{filter:brightness(1.06)}
+    button[disabled]{opacity:.5;cursor:not-allowed}
+    .ok{color:var(--good)} .err{color:var(--bad)}
+    .center{display:flex;flex-direction:column;align-items:center;gap:14px}
+    .spinner{width:22px;height:22px;border:3px solid rgba(255,255,255,.16);border-top-color:var(--accent);border-radius:999px;animation:sp 1s linear infinite}
+    @keyframes sp{to{transform:rotate(1turn)}}
+    .hint{color:var(--muted);font-size:14px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>FIDO2 验证</h1>
+      <div class="muted">请触摸你的安全密钥进行验证，以判定跳转到“已有钱包”或“初始化”。</div>
+
+      <div class="row">
+        <button id="btn-start">开始验证</button>
+        <span id="tip" class="muted"></span>
+      </div>
+
+      <div id="busy" class="row" style="display:none">
+        <div class="spinner"></div>
+        <div class="hint">正在等待安全密钥/查询服务器…</div>
+      </div>
+
+      <div class="hint" style="margin-top:12px">
+        若你尚未为本域注册凭证，将在验证流程中提示创建；若服务器不存在绑定记录，将跳转到 <code>init.html</code> 进行首次初始化。
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // ===== 依赖：与现有 fido2.js 对齐（只用两个导出） =====
+    import { ensureCredentialWithChoice, loadCredHex } from './js/fido2.js';
+
+    // ===== 配置：你的 Worker API 基址（已用于 /bundles/by-cred/:cred_hex）=====
+    const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';
+
+    const $ = id => document.getElementById(id);
+    const tip = $('tip');
+    const btn = $('btn-start');
+    const busy = $('busy');
+
+    async function checkAndRoute() {
+      try {
+        tip.textContent = '';
+        btn.disabled = true;
+        busy.style.display = 'flex';
+
+        // 1) 触发/复用 FIDO2（会引导选择或创建）得到本域可用 credential
+        // 如果你想“只认证不注册”，可改成：
+        //   const { credential_id: credHex } = await deriveKEK({ onlyId:true });
+        const res = await ensureCredentialWithChoice();   // { ok, id_hex, created }
+        const credHex = res?.id_hex || loadCredHex();
+        if (!credHex) throw new Error('未能获取本域凭证');
+
+        // 2) 询问服务器：该 credential_id 是否已有绑定记录
+        const r = await fetch(`${API_BASE}/bundles/by-cred/${encodeURIComponent(credHex)}`, { method:'GET' });
+        const j = await r.json().catch(()=> ({}));
+        if (!r.ok || !j?.ok) {
+          // 若服务端暂不可用，默认进入 init（更安全）
+          console.warn('by-cred query failed, fall back to init:', j);
+          location.href = `./init.html?cred=${encodeURIComponent(credHex)}`;
+          return;
+        }
+
+        // 3) 根据 count 跳转
+        if ((j.count|0) > 0) {
+          // 已存在记录 → 进入“已有钱包”页（你可以改为 dashboard.html）
+          location.href = `./wallet.html?cred=${encodeURIComponent(credHex)}&count=${j.count}`;
+        } else {
+          // 还没有任何绑定 → 进入初始化
+          location.href = `./init.html?cred=${encodeURIComponent(credHex)}`;
+        }
+      } catch (e) {
+        console.error(e);
+        tip.innerHTML = `<span class="err">验证失败：${e?.message || e}</span>`;
+        btn.disabled = false;
+      } finally {
+        busy.style.display = 'none';
+      }
+    }
+
+    // 点击开始
+    btn.onclick = checkAndRoute;
+
+    // 你也可以选择自动开跑：页面打开就触发
+    // checkAndRoute();
+  </script>
+</body>
+</html>
