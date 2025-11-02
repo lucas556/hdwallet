@@ -141,6 +141,21 @@ export async function deriveKEKWithSalt(saltU8, credHex=null, infoStr='wallet-pr
   return await deriveKEKWithIdHexAndSalt(idHex, saltU8, infoStr);
 }
 
+// 兼容老代码：无参 deriveKEK()，内部随机生成 salt，返回结构与旧版一致
+export async function deriveKEK() {
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const kek  = await deriveKEKWithSalt(salt);  // 复用我们已经导出的函数
+  const toHex = (u8) => [...new Uint8Array(u8)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  return {
+    kek,
+    salt,
+    rp_id: RP_ID,
+    info: 'wallet-priv-bundle-v1',
+    credential_id: loadCredHex() || '',
+    toHex
+  };
+}
+
 /* ---------- AES-GCM（字符串） ---------- */
 export async function aesGcmEncryptStr(key, text){
   if (!text) return null;
