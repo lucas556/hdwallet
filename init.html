@@ -229,10 +229,22 @@ $('reveal-btn').onclick = async ()=>{
 $('btn-encrypt').onclick = async ()=>{
   const tip=$('encrypt-tip');
   try{
-    if (!sealed || !encXprv || !xpubs || !paths) { tip.innerHTML='<span class="err">请先完成步骤 B。</span>'; return; }
-    tip.textContent = '写入中…';
+    if (!sealed || !encXprv || !xpubs || !paths) {
+      tip.innerHTML='<span class="err">请先完成步骤 B。</span>';
+      return;
+    }
+    if (!selectedCredHex) {
+      tip.innerHTML='<span class="err">请先完成步骤 A（选择/注册凭证）。</span>';
+      return;
+    }
 
-    // 只写入 xprv 的密文；xpub 明文直接存（如你想加密 xpub，可同样用 aesGcmEncryptStr 处理）
+    // 1) 先做一次 WebAuthn PRF：强制“同一把钥匙”
+    tip.textContent = '请触摸同一把 FIDO2 安全钥匙以确认…';
+    // 这里不复用返回的 key，仅作为“同一把”校验；不同钥匙将抛 NotAllowedError/InvalidStateError
+    await deriveKEKWithSalt(selectedCredHex, sealed.saltHex);
+
+    // 2) 校验通过才真正写库
+    tip.textContent = '写入中…';
     const body = {
       user_id: 'web-ui',
       note   : 'bundle-init',
@@ -262,7 +274,8 @@ $('btn-encrypt').onclick = async ()=>{
     $('final').innerHTML = `<span class="ok">写入成功：bundle_id=${data.bundle_id}</span>`;
   }catch(e){
     tip.textContent='';
-    $('final').innerHTML = `<span class="err">写入失败：${e?.message||e}</span>`;
+    // 常见：NotAllowedError/InvalidStateError = 不是同一把钥匙 或 取消/超时
+    $('final').innerHTML = `<span class="err">写入失败：${e?.name||''} ${e?.message||e}</span>`;
     console.error(e);
   }
 };
