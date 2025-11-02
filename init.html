@@ -81,12 +81,11 @@ import {
   deriveKEKWithSalt,
   aesGcmEncryptStr,
   aesGcmDecryptStr,
-  loadCredHex,          // 新增：用来判断是否已有凭证
+  loadCredHex,
 } from './js/fido2.js';
 
 import {
   genMnemonic, mnemonicToSeed, exportBranches,
-  createPasswordBackupBlob, validatePasswordStrict
 } from './js/hdwallet-core.js';
 
 /* ===== DOM 快捷 ===== */
@@ -96,25 +95,20 @@ const $ = (id) => document.getElementById(id);
 const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';
 let branches = null;        // 各链分支（xprv/xpub...）
 let sealed = null;          // 助记词密文包 { ctHex, ivHex, saltHex, credId }
+let wordCount = 12;         // 生成后记录单词数，用于遮挡占位
 const DISPLAY_MS = 30_000;  // 显示 30 秒
+let hideTimer = null;       // 自动遮挡计时器
 
 /* ===== UI 辅助 ===== */
-function enableGenUI(on = true) {
-  const g = $('btn-gen');
-  if (g) g.disabled = !on;
-}
-function enableShowUI(on = true) {
-  const s = $('btn-show');
-  if (s) s.disabled = !on;
-}
-function enableEncryptUI(on = true) {
-  const e = $('btn-encrypt');
-  if (e) e.disabled = !on;
-}
+function enableGenUI(on = true)  { const b=$('btn-gen');     if (b) b.disabled = !on; }
+function enableShowUI(on = true) { const b=$('btn-show');    if (b) b.disabled = !on; }
+function enableEncryptUI(on=true){ const b=$('btn-encrypt'); if (b) b.disabled = !on; }
+function showCard()              { const c=$('mnemo-card');  if (c) c.style.display = 'block'; }
+function clearTimer()            { if (hideTimer) { clearTimeout(hideTimer); hideTimer=null; } }
+
 function renderGrid(words) {
   const grid = $('mnemo-grid');
-  const card = $('mnemo-card');
-  if (!grid || !card) return;
+  if (!grid) return;
   grid.innerHTML = '';
   words.forEach((w, i) => {
     const d = document.createElement('div');
@@ -122,12 +116,16 @@ function renderGrid(words) {
     d.innerHTML = `<span class="badge">${i+1}</span><span class="word">${w}</span>`;
     grid.appendChild(d);
   });
-  card.style.display = 'block';
 }
 
-/* ===== 页面就绪后绑定事件 ===== */
+function renderMaskedGrid(n) {
+  // 用圆点占位，既“显示卡片且被遮挡”的视觉
+  const dots = Array.from({ length: n }, () => '•••••');
+  renderGrid(dots);
+}
+
+/* ===== 初始：若本地已有凭证，则启用“生成助记词” ===== */
 document.addEventListener('DOMContentLoaded', () => {
-  /* --- 初始：若本地已有凭证，则启用“生成助记词” --- */
   try {
     if (loadCredHex()) {
       enableGenUI(true);
@@ -146,7 +144,6 @@ document.addEventListener('DOMContentLoaded', () => {
           ? '<span class="ok">已注册新凭证。</span>'
           : `<span class="ok">已可使用凭证（id: ${(res?.id_hex||'').slice(0,16)}…）。</span>`;
       }
-      // 有凭证后启用“生成助记词”
       enableGenUI(true);
     } catch (e) {
       if (tip) tip.innerHTML = `<span class="err">注册/复用失败：${e?.message||e}</span>`;
@@ -154,19 +151,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  /* --- 步骤 B-1：可选 勾选“离线备份”（这版 UI 只有勾选，不含密码框） --- */
-  $('cb-backup')?.addEventListener('change', () => {
-    // 当前你的 UI 里没有密码输入与备份按钮，这里只记录勾选状态用于生成时逻辑分支
-    // 如果以后加回密码框/按钮，再在这里开关相关 DOM。
-  });
-
-  /* --- 步骤 B-2：生成助记词（默认只保存密文；分支在内存保留用于写库） --- */
+  /* --- 步骤 B-2：生成助记词（默认“显示卡片但被遮挡”，需点击显示+FIDO2验证） --- */
   $('btn-gen')?.addEventListener('click', async () => {
     const tip = $('gen-tip');
     try {
       // 1) 生成助记词（明文仅短暂存在）
-      const mnemonic = genMnemonic(128);             // 12 词
+      const mnemonic = genMnemonic(128);                      // 12 词
       const words = mnemonic.trim().split(/\s+/);
+      wordCount = words.length || 12;
 
       // 2) 立即用 FIDO2 派生 KEK + salt 加密助记词，仅保存密文
       const { kek, salt, rp_id, info, credential_id, toHex } = await deriveKEK();
@@ -184,19 +176,13 @@ document.addEventListener('DOMContentLoaded', () => {
       branches = exportBranches(seed);
       enableEncryptUI(true);
 
-      // 4) 如果“离线备份”勾选，则**不显示明文**；否则允许手动“显示助记词”
-      if ($('cb-backup')?.checked) {
-        if (tip) tip.innerHTML = '<span class="ok">助记词已加密并可用于离线备份（本页不显示明文）。</span>';
-        enableShowUI(false);
-        // 这里如果要“立刻下载密文包”，可在此触发下载 sealed 的 JSON：
-        // const blob = new Blob([JSON.stringify({ sealed }, null, 2)], { type:'application/json' });
-        // ...
-      } else {
-        if (tip) tip.textContent = '';
-        enableShowUI(true);   // 允许点击“显示助记词（需 FIDO2 解密）”
-      }
+      // 4) UI：立刻显示“被遮挡的卡片”（占位圆点），需要用户点击“显示助记词”并完成 FIDO2 解密后才显示真词
+      showCard();
+      renderMaskedGrid(wordCount);
+      enableShowUI(true);      // 总是允许点击显示（显示时会走 FIDO2 验证）
+      if (tip) tip.textContent = '';  // 取消之前的长提示
 
-      // 5) 安全：清理局部变量引用（全局不保留 mnemonic）
+      // 5) 安全：清理明文变量
       try { for (let i=0;i<words.length;i++) words[i]=''; } catch {}
     } catch (e) {
       if (tip) tip.innerHTML = `<span class="err">生成失败：${e?.message||e}</span>`;
@@ -204,24 +190,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  /* --- 步骤 B-3：显示助记词（每次点击都需 FIDO2 解密；30 秒后自动隐藏） --- */
+  /* --- 步骤 B-3：显示助记词（在同一卡片内解密显示，30 秒后自动恢复遮挡） --- */
   $('btn-show')?.addEventListener('click', async () => {
     try {
       if (!sealed) { alert('请先生成助记词'); return; }
 
-      // 重新用“同一 salt + 凭证”派生 KEK
+      // 重新用“同一 salt + 凭证”派生 KEK，并解密
       const { kek } = await deriveKEKWithSalt(sealed.saltHex, sealed.credId);
       const mnemonic = await aesGcmDecryptStr(kek, sealed.ivHex, sealed.ctHex);
       const words = mnemonic.trim().split(/\s+/);
-
+      showCard();
       renderGrid(words);
 
-      // 30 秒后清空显示
-      setTimeout(() => {
-        const grid = $('mnemo-grid');
-        if (grid) grid.innerHTML = '';
-        const card = $('mnemo-card');
-        if (card) card.style.display = 'none';
+      // 30 秒后自动恢复遮挡（不关闭卡片）
+      clearTimer();
+      hideTimer = setTimeout(() => {
+        renderMaskedGrid(wordCount);
       }, DISPLAY_MS);
 
       // 清理明文变量
@@ -232,18 +216,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  /* --- 步骤 C：使用凭证加密分支并写入数据库 --- */
+  /* --- 步骤 C：使用凭证加密分支并写入数据库（不改） --- */
   $('btn-encrypt')?.addEventListener('click', async () => {
     const tip = $('encrypt-tip');
     try {
-      if (!branches) { alert('请先生成助记词'); return; }
+      if (!branches){ alert('请先生成助记词'); return; }
       if (tip) tip.textContent = '请触摸密钥以继续…';
 
       const { kek, salt, rp_id, info, credential_id, toHex } = await deriveKEK();
       const enc = async s => s ? await aesGcmEncryptStr(kek, s) : null;
       const bundle = {
-        KEKInfo: { rp_id, info, salt: toHex(salt), credential_id },
-        chains: {
+        KEKInfo:{ rp_id, info, salt: toHex(salt), credential_id },
+        chains:{
           ETH:  { path: branches.ETH.path,  PubEnc: await enc(branches.ETH.xpub),   PrivEnc: await enc(branches.ETH.xprv) },
           BTC:  { path: branches.BTC.path,  PubEnc: await enc(branches.BTC.xpub_z), PrivEnc: await enc(branches.BTC.xprv_z) },
           EOS:  { path: branches.EOS.path,  PubEnc: await enc(branches.EOS.xpub),   PrivEnc: await enc(branches.EOS.xprv) },
@@ -260,7 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       if (tip) tip.textContent = '';
-      // 仅清理最敏感字段
+      // 最敏感字段置空
       branches.ETH.xprv = branches.EOS.xprv = branches.TRON.xprv = null;
       branches.BTC.xprv_z = null;
       alert(`写入成功：bundle_id=${data.bundle_id}`);
