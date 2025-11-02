@@ -1,6 +1,6 @@
 // public/js/fido2.js —— 与 init.html 对齐的完整实现（支持 PRF / HKDF / AES-GCM）
 
-const RP_ID   = location.hostname;
+const RP_ID   = "lucas556.github.io";
 const RP_NAME = 'HD Wallet Init';
 const USER_NAME = 'local-user';
 const CRED_STORAGE_KEY = 'fido2_cred_hex';
