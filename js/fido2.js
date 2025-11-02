@@ -2,7 +2,7 @@
 
 const RP_ID   = "lucas556.github.io";
 const RP_NAME = 'HD Wallet Init';
-const USER_NAME = 'local-user';
+const USER_NAME = 'user';
 const CRED_STORAGE_KEY = 'fido2_cred_hex';
 
 const te = new TextEncoder();
