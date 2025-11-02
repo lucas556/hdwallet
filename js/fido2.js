@@ -1,7 +1,7 @@
 // public/js/fido2.js — 完整版（与 init.html 配套）
 
 /* ---------- 常量 & 小工具 ---------- */
-export const RP_ID   = lucas556.github.io;
+export const RP_ID   = "lucas556.github.io";
 const RP_NAME = 'HD Wallet Init';
 const USER_NAME = 'local-user';
 const CACHE_CRED = 'fido2_cred_hex';
