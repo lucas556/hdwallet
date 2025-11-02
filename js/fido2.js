@@ -1,218 +1,179 @@
-<script type="module">
-  /********** 依赖模块（与 fido2.js 对齐） **********/
-  import {
-    genMnemonic, mnemonicToSeed, exportBranches,
-    createPasswordBackupBlob, validatePasswordStrict
-  } from './js/hdwallet-core.js';
+// public/js/fido2.js  — 安全兜底版（不会在模块顶层抛错）
+const RP_ID   = location.hostname;
+const RP_NAME = 'HD Wallet Init';
+const USER_NAME = 'local-user';
+const STORAGE_KEY = 'fido2_cred_hex';
 
-  import {
-    ensureCredentialWithChoice,
-    deriveKEK,                 // ✅ 统一用 deriveKEK({ saltHex })
-    aesGcmEncryptStr,
-    aesGcmDecryptStr           // ✅ 新增导入，用于“显示 30 秒”临时解密
-  } from './js/fido2.js';
+export function loadCredHex() { try { return localStorage.getItem(STORAGE_KEY) || null; } catch { return null; } }
+export function saveCredHex(hex) { try { localStorage.setItem(STORAGE_KEY, hex); } catch {} }
+export function clearCredHex() { try { localStorage.removeItem(STORAGE_KEY); } catch {} }
 
-  /********** 配置：你的 Worker API **********/
-  const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';
+function ab2hex(buf){ const b=new Uint8Array(buf); let s=''; for(const x of b) s+=x.toString(16).padStart(2,'0'); return s; }
+function hex2ab(hex){ const s=hex.replace(/^0x/i,''); const out=new Uint8Array(s.length/2); for(let i=0;i<out.length;i++) out[i]=parseInt(s.slice(i*2,i*2+2),16); return out.buffer; }
+const enc = new TextEncoder();
+const dec = new TextDecoder();
 
-  /********** 小工具 **********/
-  const $ = id => document.getElementById(id);
-  const u8toHex = u8 => [...u8].map(b=>b.toString(16).padStart(2,'0')).join('');
+// 便捷：hex <-> Uint8Array
+function hexToU8(h){ h=h.replace(/^0x/i,''); const u=new Uint8Array(h.length/2); for(let i=0;i<u.length;i++) u[i]=parseInt(h.slice(i*2,i*2+2),16); return u; }
+function u8ToHex(u){ return [...u].map(b=>b.toString(16).padStart(2,'0')).join(''); }
 
-  async function saveBundleToDB(bundle, { user_id='web-ui', note='' } = {}) {
-    const res = await fetch(`${API_BASE}/bundles`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ user_id, note, bundle })
-    });
-    const data = await res.json().catch(()=> ({}));
-    if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`);
-    return data; // { ok:true, bundle_id:'...' }
+async function safeCredentialsGet(opts) {
+  if (!('credentials' in navigator) || !navigator.credentials?.get) {
+    throw new Error('WebAuthn not supported in this browser.');
   }
+  if (opts && 'mediation' in opts) delete opts.mediation; // 某些浏览器不认识 mediation
+  try { return await navigator.credentials.get(opts); }
+  catch (e) { return Promise.reject(e); }
+}
 
-  /********** 状态 **********/
-  let branches = null;               // 各链分支（xprv/xpub…）
-  let mnemoEnc = null;               // 助记词密文 { nonce, ciphertext, saltHex, credential_id }
-  let revealTimer = null;            // 30s 计时器
-  const DISPLAY_MS = 30_000;
-
-  /********** UI 辅助 **********/
-  function fillGridPlaceholders(n=12){
-    const grid = $('mnemo-grid'); grid.innerHTML = '';
-    for (let i=1;i<=n;i++){
-      const cell = document.createElement('div'); cell.className='cell';
-      cell.innerHTML = `<span class="badge">${i}</span><span class="word">•••••</span>`;
-      grid.appendChild(cell);
-    }
+async function safeCredentialsCreate(opts) {
+  if (!('credentials' in navigator) || !navigator.credentials?.create) {
+    throw new Error('WebAuthn not supported in this browser.');
   }
-  function renderMnemonicWords(m){
-    const words = m.trim().split(/\s+/);
-    const grid = $('mnemo-grid'); grid.innerHTML = '';
-    words.forEach((w,i)=>{
-      const cell = document.createElement('div'); cell.className='cell';
-      cell.innerHTML = `<span class="badge">${i+1}</span><span class="word">${w}</span>`;
-      grid.appendChild(cell);
-    });
-  }
-  function showMask(){ $('mnemo-mask').style.display = 'flex'; }
-  function hideMask(){ $('mnemo-mask').style.display = 'none'; }
-  function reMaskAfter(ms){
-    clearTimeout(revealTimer);
-    revealTimer = setTimeout(()=>{
-      // 回到遮挡态 & 占位
-      showMask();
-      fillGridPlaceholders();
-      // 清理任何残留明文
-      try {
-        // grid 里只剩占位，不存明文；另外确保本地变量不保存明文
-      } catch {}
-    }, ms);
-  }
+  try { return await navigator.credentials.create(opts); }
+  catch (e) { return Promise.reject(e); }
+}
 
-  /********** Step 1：生成助记词（先确保有 FIDO2 凭证） **********/
-  $('btn-gen').onclick = async ()=>{
-    try{
-      // 1) 确保存在/复用凭证（这里不会阻塞后续“显示 30 秒”再次验证）
-      await ensureCredentialWithChoice();
-
-      // 2) 生成助记词与分支（明文只在本函数栈里存在）
-      const mnemonic = genMnemonic(128);                  // 12 词
-      const seed = mnemonicToSeed(mnemonic, '');
-      branches = exportBranches(seed);
-
-      // 3) 立刻用 FIDO2 派生出的 KEK 加密助记词，然后清理明文
-      const { kek, salt, rp_id, info, credential_id, toHex } = await deriveKEK(); // 随机盐
-      const enc = await aesGcmEncryptStr(kek, mnemonic);
-      mnemoEnc = { ...enc, saltHex: toHex(salt), credential_id };
-
-      // 清理明文变量（尽可能缩短明文驻留）
-      // 覆盖字符串（JS 字符串不可原地覆写，只能丢弃引用）
-      // 但我们尽量不再保留对 mnemonic 的任何引用
-      // seed/branches 会保留以便写库（不含助记词明文）
-      // 4) 初始展示卡片为遮挡占位
-      $('mnemo-container').style.display = 'block';
-      fillGridPlaceholders();
-      showMask();
-
-      // 按钮状态
-      $('btn-encrypt').disabled = false;
-      $('final-tip').textContent = '';
-    }catch(e){
-      alert('生成失败：' + (e?.message||e));
-      console.error(e);
-    }
-  };
-
-  /********** “显示 30 秒”：每次点击都重新派生 KEK 并解密 **********/
-  $('mnemo-toggle').onclick = async ()=>{
-    try{
-      if (!mnemoEnc) { alert('请先生成助记词'); return; }
-      hideMask(); // 先给出触发反馈
-
-      // 1) 用保存的 saltHex 重新派生 KEK（必要时会引导触摸/验证）
-      const { kek } = await deriveKEK({ saltHex: mnemoEnc.saltHex });
-
-      // 2) 解密得到助记词明文，只用于渲染
-      const plaintext = await aesGcmDecryptStr(kek, mnemoEnc);
-      renderMnemonicWords(plaintext);
-
-      // 3) 启动 30 秒自动遮挡，随后清理
-      reMaskAfter(DISPLAY_MS);
-
-      // 4) 立即销毁本地变量中对明文的引用（尽可能缩短生命周期）
-      // （注意 JS 字符串不可原地擦除，只能丢失引用）
-      // eslint-disable-next-line no-self-assign
-      // @ts-ignore
-      // 直接丢弃引用：
-      // plaintext = null; // 在 strict 下会报错，因为 const；这里不再持有引用即可
-    }catch(e){
-      showMask();
-      console.error(e);
-      alert('解密显示失败：' + (e?.message||e));
-    }
-  };
-
-  /********** Step 2：离线备份（可选） **********/
-  $('want-backup').onchange = e=>{
-    $('backup-area').style.display = e.target.checked ? 'block' : 'none';
-    $('btn-backup').disabled = !e.target.checked;
-  };
-  $('pw1').oninput = $('pw2').oninput = ()=>{
-    const p1=$('pw1').value, p2=$('pw2').value;
-    if (!p1 && !p2){ $('pw-tip').textContent=''; $('btn-backup').disabled=true; return; }
-    if (p1!==p2){ $('pw-tip').innerHTML='<span class="err">两次密码不一致</span>'; $('btn-backup').disabled=true; return; }
-    const v = validatePasswordStrict(p1);
-    if (!v.ok){ $('pw-tip').innerHTML='<span class="err">'+v.reason+'</span>'; $('btn-backup').disabled=true; return; }
-    $('pw-tip').innerHTML='<span class="ok">密码强度通过</span>'; $('btn-backup').disabled=false;
-  };
-  $('btn-backup').onclick = async ()=>{
-    try{
-      if (!mnemoEnc){ alert('请先生成助记词'); return; }
-      // 离线备份是“助记词明文 + 你的强密码”的二次加密策略
-      // 需要明文：临时解密一次（派生 KEK）
-      const { kek } = await deriveKEK({ saltHex: mnemoEnc.saltHex });
-      const plaintext = await aesGcmDecryptStr(kek, mnemoEnc);
-
-      const { blob } = await createPasswordBackupBlob(plaintext, $('pw1').value);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href=url; a.download='mnemonic_backup.enc.json'; a.click();
-      setTimeout(()=>URL.revokeObjectURL(url), 3000);
-      $('pw-tip').innerHTML = '<span class="ok">已生成并下载离线备份。</span>';
-      // 丢弃明文引用
-      // plaintext = null;
-    }catch(e){
-      $('pw-tip').innerHTML='<span class="err">备份失败：'+(e?.message||e)+'</span>';
-      console.error(e);
-    }
-  };
-
-  /********** Step 3：注册/复用 FIDO2 凭证（便捷入口，不阻塞第 4 步） **********/
-  $('btn-register').onclick = async ()=>{
-    try{
-      const res = await ensureCredentialWithChoice(); // { ok, id_hex, created }
-      if (res?.created){
-        $('reg-tip').innerHTML = '<span class="ok">已注册新凭证。</span>';
-      }else{
-        $('reg-tip').innerHTML = `<span class="ok">已可使用凭证（id: ${String(res?.id_hex||'').slice(0,16)}…）。</span>`;
+// 尝试发现已有凭证（失败就返回 null，绝不在顶层 throw）
+async function tryDiscoverExistingCredential() {
+  try {
+    const cred = await safeCredentialsGet({
+      publicKey: {
+        rpId: RP_ID,
+        userVerification: 'preferred',
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        timeout: 60000
+        // 不设 allowCredentials：让设备枚举可发现凭证
       }
-    }catch(e){
-      $('reg-tip').innerHTML = '<span class="err">注册/复用失败：'+(e?.message||e)+'</span>';
-      console.error(e);
+    });
+    if (cred && cred.id) {
+      const idHex = ab2hex(cred.rawId);
+      saveCredHex(idHex);
+      return idHex;
     }
+  } catch (_) {
+    // 可能出现“not registered with this website”等，忽略当作无
+  }
+  return null;
+}
+
+// 注册新凭证（resident key + PRF 探测）
+export async function registerNewCredential() {
+  const userId = crypto.getRandomValues(new Uint8Array(16));
+  const pubKey = {
+    rp: { id: RP_ID, name: RP_NAME },
+    user: { id: userId, name: USER_NAME, displayName: USER_NAME },
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    pubKeyCredParams: [
+      { alg: -7, type: 'public-key' },   // ES256
+      { alg: -8, type: 'public-key' },   // Ed25519
+      { alg: -257, type: 'public-key' }  // RS256
+    ],
+    authenticatorSelection: { residentKey: 'required', userVerification: 'preferred' },
+    attestation: 'none',
+    extensions: { prf: { eval: { first: new Uint8Array(32) } } }
   };
+  const cred = await safeCredentialsCreate({ publicKey: pubKey });
+  const idHex = ab2hex(cred.rawId);
+  saveCredHex(idHex);
+  return { created: true, id_hex: idHex };
+}
 
-  /********** Step 4：PRF→HKDF → AES-GCM 加密分支并写库（不含助记词） **********/
-  $('btn-encrypt').onclick = async ()=>{
-    try{
-      if (!branches){ alert('请先生成助记词'); return; }
-      $('encrypt-tip').textContent = '请触摸密钥以继续…';
+// 有则用，无则注册；如发现旧的也可让用户选择新建
+export async function ensureCredentialWithChoice() {
+  const cached = loadCredHex();
+  if (cached) return { ok: true, id_hex: cached, created: false };
 
-      // 用新的随机盐派生 KEK 加密分支（与助记词的 saltHex 无关）
-      const { kek, salt, rp_id, info, credential_id, toHex } = await deriveKEK();
+  const found = await tryDiscoverExistingCredential();
+  if (found) {
+    const useExisting = confirm(`检测到本域已有凭证（${found.slice(0,16)}…）。\n是否使用该凭证？\n取消 = 注册新的。`);
+    if (useExisting) return { ok: true, id_hex: found, created: false };
+    clearCredHex();
+  }
+  const reg = await registerNewCredential();
+  return { ok: true, id_hex: reg.id_hex, created: true };
+}
 
-      const encBranch = async s => s ? await aesGcmEncryptStr(kek, s) : null;
-      const bundle = {
-        KEKInfo:{ rp_id, info, salt: toHex(salt), credential_id },
-        chains:{
-          ETH:  { path: branches.ETH.path,  PubEnc: await encBranch(branches.ETH.xpub),   PrivEnc: await encBranch(branches.ETH.xprv) },
-          BTC:  { path: branches.BTC.path,  PubEnc: await encBranch(branches.BTC.xpub_z), PrivEnc: await encBranch(branches.BTC.xprv_z) },
-          EOS:  { path: branches.EOS.path,  PubEnc: await encBranch(branches.EOS.xpub),   PrivEnc: await encBranch(branches.EOS.xprv) },
-          TRON: { path: branches.TRON.path, PubEnc: await encBranch(branches.TRON.xpub),  PrivEnc: await encBranch(branches.TRON.xprv) },
-        }
+async function deriveKEKWithIdHex(credHex, saltU8, infoStr) {
+  const cred = await safeCredentialsGet({
+    publicKey: {
+      rpId: RP_ID,
+      userVerification: 'preferred',
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: [{ type: 'public-key', id: hex2ab(credHex) }],
+      timeout: 60000,
+      extensions: { prf: { eval: { first: saltU8 } } }
+    }
+  });
+
+  const getExt = typeof cred.getClientExtensionResults === 'function'
+    ? cred.getClientExtensionResults()
+    : {};
+  const prfRes = getExt?.prf?.results?.first;
+  if (!prfRes) throw new Error('This security key does not support PRF.');
+
+  const keyMaterial = await crypto.subtle.importKey('raw', prfRes, { name: 'HKDF' }, false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: saltU8, info: enc.encode(infoStr) },
+    keyMaterial, 256
+  );
+  const kek = await crypto.subtle.importKey('raw', new Uint8Array(bits), 'AES-GCM', false, ['encrypt','decrypt']);
+  return kek;
+}
+
+/**
+ * deriveKEK({ autoRegister = true, saltHex? })
+ * - 默认生成随机 salt；传入 saltHex 可复用既有盐（例如解密已存密文）
+ */
+export async function deriveKEK({ autoRegister = true, saltHex = null } = {}) {
+  const info = 'wallet-priv-bundle-v1';
+  const salt = saltHex ? hexToU8(saltHex) : crypto.getRandomValues(new Uint8Array(32));
+
+  let credHex = loadCredHex();
+  if (!credHex) {
+    if (autoRegister) {
+      const res = await ensureCredentialWithChoice();
+      credHex = res.id_hex;
+    } else {
+      credHex = await tryDiscoverExistingCredential();
+      if (!credHex) throw new Error('No credential available.');
+    }
+  }
+
+  try {
+    const kek = await deriveKEKWithIdHex(credHex, salt, info);
+    return {
+      kek, salt, rp_id: RP_ID, info, credential_id: credHex,
+      toHex: u8ToHex
+    };
+  } catch (e) {
+    const msg = (e && (e.message || e.name || '')) + '';
+    const likelyNotRegistered = /not\s*registered|invalidstate|notallowed/i.test(msg);
+    if (autoRegister && likelyNotRegistered) {
+      clearCredHex();
+      const reg = await registerNewCredential();
+      const kek = await deriveKEKWithIdHex(reg.id_hex, salt, info);
+      return {
+        kek, salt, rp_id: RP_ID, info, credential_id: reg.id_hex,
+        toHex: u8ToHex
       };
-
-      $('encrypt-tip').textContent='正在写入数据库…';
-      const ret = await saveBundleToDB(bundle, { user_id:'web-ui', note:'初始化保存（UI）' });
-
-      // 清理私钥引用
-      branches.ETH.xprv=null; branches.BTC.xprv_z=null; branches.EOS.xprv=null; branches.TRON.xprv=null;
-
-      $('encrypt-tip').textContent='';
-      $('final-tip').innerHTML = `<span class="ok">注册成功！bundle_id=${ret.bundle_id}</span>`;
-    }catch(e){
-      $('encrypt-tip').textContent='';
-      $('final-tip').innerHTML = `<span class="err">写入失败：${e?.message||e}</span>`;
-      console.error(e);
     }
-  };
-</script>
+    throw e;
+  }
+}
+
+// AES-GCM 加密/解密（字符串）
+export async function aesGcmEncryptStr(key, text) {
+  if (!text) return null;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode(text));
+  return { nonce: u8ToHex(iv), ciphertext: u8ToHex(new Uint8Array(ct)) };
+}
+
+export async function aesGcmDecryptStr(key, { nonce, ciphertext }) {
+  if (!ciphertext) return '';
+  const iv = hexToU8(nonce);
+  const ct = hexToU8(ciphertext);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  return dec.decode(pt);
+}
