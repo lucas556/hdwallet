@@ -284,8 +284,8 @@ $('btn-gen').onclick = async ()=>{
         startGraceIfFirstReveal(); // 只有“首次成功显示”才开启 2min
       }else{
         // 窗口外：FIDO2 解密
-        const { kek } = await deriveKEKWithSalt(sealed.saltHex, sealed.credId);
-        mnemonic = await aesGcmDecryptStr(kek, sealed.ivHex, sealed.ctHex);
+        const { kek } = await deriveKEKWithSalt(saved.cred_hex, saved.mnemo_salt_hex);
+        const mnemonic = await aesGcmDecryptStr(kek, saved.mnemo_enc);
         mode = 'decrypted';
       }
 
