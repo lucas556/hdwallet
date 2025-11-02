@@ -125,14 +125,44 @@ async function queryBundlesByCred(credHex) {
 $('btn-register').onclick = async ()=>{
   const tip=$('reg-tip');
   try{
-    const res = await ensureCredentialWithChoice(); // {ok,id_hex,created}
-    selectedCredHex = res.id_hex;
-    tip.innerHTML = res.created
-      ? '<span class="ok">已注册新凭证并锁定为当前会话。</span>'
-      : `<span class="ok">已选择/复用凭证：${selectedCredHex.slice(0,16)}…</span>`;
+    const res = await ensureCredentialWithChoice();  // { ok, id_hex, created }
+    const credHex = res?.id_hex;
+
+    if (tip) {
+      tip.innerHTML = res?.created
+        ? '<span class="ok">已注册新凭证。</span>'
+        : `<span class="ok">已可使用凭证（id: ${(credHex||'').slice(0,16)}…）。</span>`;
+    }
     $('btn-gen').disabled = false;
+
+    // 🔎 新增：检查 DB 是否已有此 credential 的数据
+    if (credHex) {
+      try {
+        const q = await queryBundlesByCred(credHex);
+        if (q.count > 0) {
+          // 你可以换成自定义弹窗，这里先用 confirm
+          const latest = q.items[0]; // 最近一条
+          const ts = latest?.created_at ? new Date(latest.created_at * 1000).toLocaleString() : '未知时间';
+          const msg = [
+            `检测到这把凭证在数据库中已有 ${q.count} 条记录。`,
+            `最近一次：bundle_id=${latest?.bundle_id || '(无)'}，时间=${ts}。`,
+            '',
+            '是否继续复用该凭证？（继续 = 生成新数据；取消 = 先去核对历史）'
+          ].join('\n');
+          const goOn = confirm(msg);
+          if (!goOn) {
+            // 用户取消：你也可以在此引导一个“查看历史”的链接
+            // 例如：location.href = '/history.html?cred=' + encodeURIComponent(credHex);
+            return;
+          }
+        }
+      } catch (e) {
+        // 查询失败不阻塞主流程，只写日志
+        console.warn('query by credential failed:', e);
+      }
+    }
   }catch(e){
-    tip.innerHTML = `<span class="err">失败：${e?.message||e}</span>`;
+    if(tip) tip.innerHTML=`<span class="err">注册/复用失败：${e?.message||e}</span>`;
     console.error(e);
   }
 };
