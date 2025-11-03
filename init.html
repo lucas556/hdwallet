@@ -105,7 +105,7 @@
   </div>
 
 <script type="module">
-/* ===== 依赖（与现有 fido2.js 保持一致） ===== */
+/* ===== 依赖（与当前 fido2.js 保持一致） ===== */
 import {
   loadCredHex, saveCredHex,
   ensureCredentialWithChoice,
@@ -118,17 +118,24 @@ import {
 } from './js/hdwallet-core.js';
 
 /* ===== 配置 ===== */
-const API_BASE  = 'https://wallet.lucas-l-shang.workers.dev';
-const REVEAL_MS = 60_000;
+const API_BASE   = 'https://wallet.lucas-l-shang.workers.dev';
+const REVEAL_MS  = 60_000;         // 显示助记词 60s
+const PBKDF2_ITR = 210_000;        // 离线备份 KDF 轮数（浏览器可承受范围内偏强）
+const PW_MIN_LEN = 8;
 
 /* ===== 状态 ===== */
 const state = {
-  selectedCredHex: null,  // 仅当“该 cred 数据库无记录”时才允许赋值
+  selectedCredHex: null,  // A 步骤绑定；库中“无记录”才允许初始化
   sealed: null,           // { mnemo:{nonce,ciphertext}, saltHex, credId, rp_id, info }
-  sealedChains: null,     // 各链密文
+  sealedChains: null,     // 各链密文（FIDO2 加密）
   branchesPub: null,      // 各链公开数据（xpub/path）
   wordCount: 12,
   autoMaskTimer: null,
+
+  // 备份相关
+  wantBackup: false,
+  pw1: '',
+  pw2: '',
 };
 
 /* ===== DOM 工具 ===== */
@@ -148,62 +155,149 @@ function renderGrid(words){
   });
 }
 function renderMasked(n=12){ renderGrid(Array.from({length:n},()=> '•••••')); }
+const toHex = (u8) => [...new Uint8Array(u8)].map(b=>b.toString(16).padStart(2,'0')).join('');
 
-/* ===== 通用：按 credHex 查是否已在库里（兼容你两种返回结构） ===== */
+/* ===== 按 credHex 查库（兼容两种返回结构） ===== */
 async function fetchBundleByCred(credHex){
   const resp = await fetch(`${API_BASE}/bundles/by-cred/${credHex}`);
   if (resp.status === 404) return null;
   const data = await resp.json().catch(()=> ({}));
   if (!resp.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${resp.status}`);
-
-  // 支持两种后端形态：{bundle} 或 {count, items[]} / {results[]}
   if (data.bundle) return data.bundle;
-  if (Array.isArray(data.items) && data.items.length) return data.items[0];
+  if (Array.isArray(data.items)   && data.items.length)   return data.items[0];
   if (Array.isArray(data.results) && data.results.length) return data.results[0];
   return null;
 }
 
-/* ===== 初始：禁止生成，直到通过 A 步骤绑定 cred 并确认库中无记录 ===== */
+/* ===== 密码强度校验 & UI 绑定 ===== */
+function validatePassword(pw){
+  if (!pw || pw.length < PW_MIN_LEN) return { ok:false, reason:`至少 ${PW_MIN_LEN} 位` };
+  const hasLower = /[a-z]/.test(pw);
+  const hasUpper = /[A-Z]/.test(pw);
+  const hasNum   = /\d/.test(pw);
+  const hasSpec  = /[^A-Za-z0-9]/.test(pw);
+  if (!(hasLower && hasUpper && (hasNum || hasSpec))) {
+    return { ok:false, reason:'需含大小写字母，且包含数字或特殊字符' };
+  }
+  return { ok:true };
+}
+function refreshGenButton(){
+  // 只有在 A 步骤完成且（未勾选备份 或 密码合格且一致）时，才允许生成
+  const credOK = !!state.selectedCredHex;
+  let pwOK = true;
+  if (state.wantBackup){
+    const v = validatePassword(state.pw1);
+    pwOK = v.ok && (state.pw1 === state.pw2);
+  }
+  enable('btn-gen', credOK && pwOK);
+}
+
+function bindBackupUI(){
+  const cb = $('cb-backup');
+  const area = $('backup-area');
+  const p1 = $('pw1');
+  const p2 = $('pw2');
+  const tip = $('pw-tip');
+
+  if (!cb) return;               // 没有相关 UI 则不启用备份逻辑
+  if (area) area.style.display = 'none';
+
+  cb.onchange = ()=>{
+    state.wantBackup = !!cb.checked;
+    if (area) area.style.display = cb.checked ? 'block' : 'none';
+    if (!cb.checked){
+      state.pw1 = state.pw2 = '';
+      if (tip) tip.textContent = '';
+    }
+    refreshGenButton();
+  };
+
+  const onPwInput = ()=>{
+    state.pw1 = p1?.value || '';
+    state.pw2 = p2?.value || '';
+    if (!state.wantBackup){ if(tip) tip.textContent=''; refreshGenButton(); return; }
+    if (!state.pw1 && !state.pw2){ if(tip) tip.textContent=''; refreshGenButton(); return; }
+    if (state.pw1 !== state.pw2){ if(tip) tip.innerHTML='<span class="err">两次输入不一致</span>'; refreshGenButton(); return; }
+    const v = validatePassword(state.pw1);
+    if (!v.ok){ if(tip) tip.innerHTML = `<span class="err">${v.reason}</span>`; refreshGenButton(); return; }
+    if (tip) tip.innerHTML = '<span class="ok">密码强度通过</span>';
+    refreshGenButton();
+  };
+
+  if (p1) p1.oninput = onPwInput;
+  if (p2) p2.oninput = onPwInput;
+}
+
+/* ===== PBKDF2 → AES-GCM（用于离线备份，仅用用户密码） ===== */
+async function derivePasswordAesKey(password, saltU8, iterations=PBKDF2_ITR){
+  const te = new TextEncoder();
+  const keyMat = await crypto.subtle.importKey('raw', te.encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name:'PBKDF2', hash:'SHA-256', salt: saltU8, iterations },
+    keyMat, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']
+  );
+}
+async function encryptMnemonicWithPassword(mnemonic, password){
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const key  = await derivePasswordAesKey(password, salt, PBKDF2_ITR);
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const ct   = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, new TextEncoder().encode(mnemonic));
+  return {
+    version: 1,
+    created_at: Math.floor(Date.now()/1000),
+    kdf:   { name:'PBKDF2', hash:'SHA-256', iterations: PBKDF2_ITR, salt: toHex(salt) },
+    cipher:{ name:'AES-GCM', iv: toHex(iv) },
+    ciphertext: toHex(new Uint8Array(ct))
+  };
+}
+function downloadJson(obj, filename){
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type:'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  setTimeout(()=> URL.revokeObjectURL(url), 1500);
+}
+
+/* ===== 初始：禁止生成；绑定备份 UI ===== */
 document.addEventListener('DOMContentLoaded', ()=>{
   enable('btn-gen', false);
+  bindBackupUI();
 });
 
-/* ===== 步骤 A：注册/选择凭证 → 立刻查库 → 若存在则禁止并跳转 ===== */
+/* ===== 步骤 A：注册/选择凭证 → 查库：存在则禁止并跳转 ===== */
 $('btn-register').onclick = async ()=>{
   const tip=$('reg-tip');
   try{
-    const res  = await ensureCredentialWithChoice();      // 可能选择已有 discoverable，或创建新凭证
+    const res  = await ensureCredentialWithChoice();
     const cred = res?.id_hex;
     if (!cred) throw new Error('未获得有效凭证');
     saveCredHex(cred);
 
     const exists = await fetchBundleByCred(cred);
     if (exists) {
-      // ★ 已存在：严格禁止继续，并跳转
       state.selectedCredHex = null;
       enable('btn-gen', false);
-      if (tip) tip.innerHTML = `<span class="err">该凭证已在数据库注册（禁止重复初始化），即将跳转钱包页。</span>`;
+      if (tip) tip.innerHTML = `<span class="err">该凭证已在数据库注册，禁止重复初始化；即将跳转钱包页。</span>`;
       setTimeout(()=>{ location.href = `wallet.html?cred=${cred}`; }, 1000);
       return;
     }
 
-    // ★ 不存在：允许继续
     state.selectedCredHex = cred;
-    enable('btn-gen', true);
-    if (tip) tip.innerHTML = `<span class="ok">已注册/绑定凭证（id: ${cred.slice(0,16)}…），可继续生成助记词。</span>`;
+    if (tip) tip.innerHTML = `<span class="ok">已注册/绑定凭证（id: ${cred.slice(0,16)}…）。</span>`;
+    refreshGenButton();
   }catch(e){
     console.error(e);
     if (tip) tip.innerHTML = `<span class="err">凭证注册/绑定失败：${e?.message||e}</span>`;
   }
 };
 
-/* ===== 步骤 B：生成（生成前再次校验该 cred 是否突然已被写库） ===== */
+/* ===== 步骤 B：生成（若勾选备份则必须先通过密码校验；生成时立刻离线加密并下载 JSON） ===== */
 $('btn-gen').onclick = async ()=>{
   const tip=$('gen-tip');
   try{
     if(!state.selectedCredHex) throw new Error('请先完成步骤 A。');
 
-    // 二次防线：生成前再查一次库（防止并发或用户开多标签页）
+    // 二次校验：防并发
     const again = await fetchBundleByCred(state.selectedCredHex);
     if (again) {
       enable('btn-gen', false);
@@ -212,21 +306,27 @@ $('btn-gen').onclick = async ()=>{
       return;
     }
 
-    // 生成助记词 & 分支
+    // 如果勾选备份，要求密码已合格
+    if (state.wantBackup){
+      const v = validatePassword(state.pw1);
+      if (!v.ok || state.pw1 !== state.pw2) throw new Error('备份密码未通过校验');
+    }
+
+    // 生成 + 分支
     const mnemonic = genMnemonic(128);
     const words    = mnemonic.trim().split(/\s+/);
     state.wordCount= words.length || 12;
     const seed     = mnemonicToSeed(mnemonic,'');
     const branches = exportBranches(seed);
 
-    // 用步骤 A 绑定的同一把凭证 + 随机盐 派生 KEK 加密
+    // FIDO2 派生同把 cred 的 KEK（随机盐）→ 加密：助记词 + 链私钥
     const salt = crypto.getRandomValues(new Uint8Array(32));
     const { kek } = await deriveKEKWithSalt(state.selectedCredHex, salt);
 
-    // 助记词密文
+    // 助记词密文（FIDO）
     const mnEnc = await aesGcmEncryptStr(kek, mnemonic);
 
-    // 各链密文（不同 nonce，绝不复用）
+    // 各链密文（FIDO；不同 nonce，绝不复用）
     const enc = async (s)=> s ? await aesGcmEncryptStr(kek, s) : null;
     const sealedChains = {
       ETH:  { path: branches.ETH.path,  PubEnc: await enc(branches.ETH.xpub),   PrivEnc: await enc(branches.ETH.xprv) },
@@ -235,7 +335,7 @@ $('btn-gen').onclick = async ()=>{
       TRON: { path: branches.TRON.path, PubEnc: await enc(branches.TRON.xpub),  PrivEnc: await enc(branches.TRON.xprv) },
     };
 
-    // 仅保留公开部分
+    // 公开信息
     state.branchesPub = {
       ETH:  { path: branches.ETH.path,  xpub: branches.ETH.xpub },
       BTC:  { path: branches.BTC.path,  xpub_z: branches.BTC.xpub_z },
@@ -243,15 +343,7 @@ $('btn-gen').onclick = async ()=>{
       TRON: { path: branches.TRON.path, xpub: branches.TRON.xpub },
     };
 
-    // 擦除私钥副本
-    for (const k of ['ETH','BTC','EOS','TRON']) {
-      if (branches[k]) {
-        if ('xprv'   in branches[k]) branches[k].xprv   = null;
-        if ('xprv_z' in branches[k]) branches[k].xprv_z = null;
-      }
-    }
-
-    const toHex = (u8) => [...new Uint8Array(u8)].map(b=>b.toString(16).padStart(2,'0')).join('');
+    // 记录 FIDO 密封体
     state.sealed = {
       mnemo:   { nonce: mnEnc.nonce, ciphertext: mnEnc.ciphertext },
       saltHex: toHex(salt),
@@ -261,12 +353,29 @@ $('btn-gen').onclick = async ()=>{
     };
     state.sealedChains = sealedChains;
 
-    // UI：默认整块遮挡
-    showCard();
-    renderMasked(state.wordCount);
-    showMask();
-    tip.textContent = '已生成并加密（默认遮挡）。';
+    // ★ 若勾选备份：在“仍握有明文”的这一刻，用用户密码离线加密并立刻下载 JSON
+    if (state.wantBackup){
+      const backup = await encryptMnemonicWithPassword(mnemonic, state.pw1);
+      downloadJson(backup, 'mnemonic_backup.enc.json');
+      // 擦除密码与提示
+      state.pw1 = state.pw2 = '';
+      const tipPw = $('pw-tip'); if (tipPw) tipPw.textContent='';
+      const p1 = $('pw1'); if (p1) p1.value='';
+      const p2 = $('pw2'); if (p2) p2.value='';
+    }
+
+    // UI：默认整块遮挡（不自动显示助记词）
+    showCard(); renderMasked(state.wordCount); showMask();
+    tip.textContent = state.wantBackup ? '已生成并下载离线备份；已完成 FIDO2 加密。' : '已生成并完成 FIDO2 加密（默认遮挡）。';
     enable('btn-encrypt', true);
+
+    // 擦本地私钥副本
+    for (const k of ['ETH','BTC','EOS','TRON']) {
+      if (branches[k]) {
+        if ('xprv'   in branches[k]) branches[k].xprv   = null;
+        if ('xprv_z' in branches[k]) branches[k].xprv_z = null;
+      }
+    }
   }catch(e){
     console.error(e);
     tip.innerHTML = `<span class="err">生成失败：${e?.message||e}</span>`;
@@ -280,7 +389,6 @@ $('btn-reveal').onclick = async ()=>{
     if(!state.selectedCredHex || state.selectedCredHex !== state.sealed.credId){
       throw new Error('当前凭证与绑定的不一致，无法解锁。');
     }
-    // 仍然再查一次库（允许用户查看，但这里不中断写库逻辑；只是解密显示）
     const { kek } = await deriveKEKWithSalt(state.selectedCredHex, state.sealed.saltHex);
     const mnemonic = await aesGcmDecryptStr(kek, state.sealed.mnemo);
     const words    = mnemonic.trim().split(/\s+/);
@@ -302,7 +410,7 @@ $('btn-reveal').onclick = async ()=>{
   }
 };
 
-/* ===== 步骤 C：写库（写入前最后再校验一次，若已存在则禁止写库并跳转） ===== */
+/* ===== 步骤 C：写库（前置终检） ===== */
 $('btn-encrypt').onclick = async ()=>{
   const tip=$('encrypt-tip');
   try{
@@ -312,7 +420,7 @@ $('btn-encrypt').onclick = async ()=>{
       throw new Error('当前凭证与已绑定的不一致，禁止写库。');
     }
 
-    // 最终防线：写库前再查一次
+    // 最终防线
     const exists = await fetchBundleByCred(state.selectedCredHex);
     if (exists) {
       tip.textContent = '';
