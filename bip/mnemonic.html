@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>BIP-39 助记词与 Seed 生成（纯 Web Crypto）</title>
+<title>BIP-39 助记词与 Seed 生成（校验 english.txt SHA-256）</title>
 <style>
   :root{--bg:#0b1220;--card:#0f172a;--text:#e5e7eb;--muted:#9ca3af;--line:#1f2937;--accent:#60a5fa}
   html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
@@ -29,11 +29,13 @@
   .kv{display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center}
   .hint{font-size:13px;color:var(--muted)}
   .copy{margin-left:8px}
+  .err{color:#ef4444}
+  .ok{color:#10b981}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>BIP-39 助记词与 Seed 生成（纯 Web Crypto）</h1>
+  <h1>BIP-39 助记词与 Seed 生成（带 english.txt 校验）</h1>
 
   <div class="card">
     <div class="row kv">
@@ -50,13 +52,15 @@
       <input id="pp" type="text" placeholder="可选：更安全，但需牢记" />
 
       <span></span>
-      <div class="hint">提示：seed = PBKDF2-HMAC-SHA512( 口令=助记词 ，salt='mnemonic'+passphrase ，迭代=2048 )</div>
+      <div class="hint">seed = PBKDF2-HMAC-SHA512( 口令=助记词 ，salt='mnemonic'+passphrase ，迭代=2048 )</div>
     </div>
 
     <div class="row">
       <button id="btn-gen">生成助记词 & Seed</button>
       <span id="tip" class="muted"></span>
     </div>
+
+    <div id="wl-tip" class="hint"></div>
   </div>
 
   <div class="card">
@@ -75,7 +79,7 @@
     <textarea id="seedhex" class="mono" readonly></textarea>
   </div>
 
-  <div class="hint">需要把 <span class="mono">english.txt</span>（2048 行官方词表）放在本页面同目录下。</div>
+  <div class="hint">请把 <span class="mono">english.txt</span>（2048 行官方词表）放在本页面同目录下。</div>
 </div>
 
 <script type="module">
@@ -83,23 +87,59 @@
 const te = new TextEncoder();
 const td = new TextDecoder();
 
-async function loadWordlist() {
-  const resp = await fetch('./english.txt', {cache:'no-cache'});
-  if (!resp.ok) throw new Error('无法加载 english.txt（2048 行词表）');
-  const text = await resp.text();
-  const list = text.trim().split(/\r?\n/);
-  if (list.length !== 2048) throw new Error('词表不是 2048 个词');
+function hex(u8){ return Array.from(u8).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+async function sha256(buf){ return new Uint8Array(await crypto.subtle.digest('SHA-256', buf)); }
+function bytesToBin(u8){ return Array.from(u8).map(b=>b.toString(2).padStart(8,'0')).join(''); }
+
+/** 计算字符串的 SHA-256（UTF-8 编码） */
+async function sha256HexOfString(s){
+  const u = te.encode(s);
+  const h = await sha256(u);
+  return hex(h);
+}
+
+/** 规范化词表文本：统一换行为 \n，去除末尾多余空行，并保证以单个 \n 结尾 */
+function normalizeWordlistText(raw){
+  let t = raw.replace(/\r\n/g, '\n');
+  // 去掉文末多余空行
+  t = t.replace(/\n+$/,'');
+  // 确保只有一个结尾换行
+  return t + '\n';
+}
+
+const EXPECTED_WL_SHA256 = '2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda';
+
+/* ========== 加载并校验词表 ========== */
+async function loadWordlistChecked() {
+  const tip = document.getElementById('wl-tip');
+  tip.textContent = '加载 english.txt 中…';
+  const resp = await fetch('./english.txt', { cache: 'no-cache' });
+  if (!resp.ok) throw new Error('无法加载 english.txt（确保与页面同目录）');
+  const raw = await resp.text();
+
+  // 尝试两种哈希：原始文本 & 规范化文本
+  const [rawHash, normHash] = await Promise.all([
+    sha256HexOfString(raw),
+    sha256HexOfString(normalizeWordlistText(raw)),
+  ]);
+
+  if (rawHash !== EXPECTED_WL_SHA256 && normHash !== EXPECTED_WL_SHA256) {
+    tip.innerHTML = `<span class="err">english.txt 校验失败！</span><br/>
+      期望：<code>${EXPECTED_WL_SHA256}</code><br/>
+      实际(raw)：<code>${rawHash}</code><br/>
+      实际(norm)：<code>${normHash}</code>`;
+    throw new Error('english.txt SHA-256 不匹配，已拒绝生成助记词。');
+  }
+
+  const textOK = (normHash === EXPECTED_WL_SHA256) ? normalizeWordlistText(raw) : raw;
+  const list = textOK.trim().split(/\n/);
+  if (list.length !== 2048) {
+    tip.innerHTML = `<span class="err">english.txt 行数不是 2048（当前 ${list.length}）。</span>`;
+    throw new Error('english.txt 行数不正确');
+  }
+
+  tip.innerHTML = `<span class="ok">english.txt 校验通过</span>`;
   return list;
-}
-async function sha256(buf) {
-  const h = await crypto.subtle.digest('SHA-256', buf);
-  return new Uint8Array(h);
-}
-function bytesToBin(u8) {
-  return Array.from(u8).map(b => b.toString(2).padStart(8, '0')).join('');
-}
-function hex(u8) {
-  return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join('');
 }
 
 /* ========== 生成助记词（BIP-39） ========== */
@@ -107,7 +147,7 @@ async function generateMnemonic(strengthBits = 128) {
   if (![128,160,192,224,256].includes(strengthBits)) {
     throw new Error('strengthBits 仅支持 128/160/192/224/256');
   }
-  const wordlist = await loadWordlist();
+  const wordlist = await loadWordlistChecked();
 
   // 1) 随机熵
   const entropy = new Uint8Array(strengthBits / 8);
@@ -123,6 +163,8 @@ async function generateMnemonic(strengthBits = 128) {
   const chunks = bits.match(/.{1,11}/g) ?? [];
   const words = chunks.map(bin => wordlist[parseInt(bin, 2)]);
 
+  // 尽量擦局部（非强约束）
+  entropy.fill(0);
   return words.join(' ');
 }
 
@@ -173,18 +215,16 @@ $('btn-gen').onclick = async () => {
     $('seedhex').value = seedHex;
     tip.textContent = `已生成：${(strength/32)+((strength%32)?1:0)} 词（${strength}-bit 熵）`;
   } catch (e) {
-    tip.textContent = '失败：' + (e?.message || e);
+    tip.innerHTML = `<span class="err">失败：${e?.message || e}</span>`;
     console.error(e);
   }
 };
 
 $('copy-mn').onclick = async ()=>{
-  try { await navigator.clipboard.writeText($('mnemo').value); }
-  catch {}
+  try { await navigator.clipboard.writeText($('mnemo').value); } catch {}
 };
 $('copy-seed').onclick = async ()=>{
-  try { await navigator.clipboard.writeText($('seedhex').value); }
-  catch {}
+  try { await navigator.clipboard.writeText($('seedhex').value); } catch {}
 };
 </script>
 </body>
