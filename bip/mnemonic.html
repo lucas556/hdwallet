@@ -103,23 +103,26 @@
 </div>
 
 <script type="module">
-/* ===== 依赖（ESM CDN） ===== */
+// ===== 依赖（ESM）=====
 import * as secp from 'https://esm.sh/@noble/secp256k1@1.7.1';
 import { ripemd160 } from 'https://esm.sh/@noble/hashes@1.4.0/ripemd160';
-  
-/* ===== 内置 bytes<->hex 工具，避免 utils 导出差异 ===== */
+
+// ===== 工具 =====
 function bytesToHex(u8){ let s=''; for (let i=0;i<u8.length;i++) s+=u8[i].toString(16).padStart(2,'0'); return s; }
 function hexToBytes(hex){ const h=hex.replace(/^0x/i,''); const out=new Uint8Array(h.length/2); for(let i=0;i<out.length;i++) out[i]=parseInt(h.slice(i*2,i*2+2),16); return out; }
-
-
-/* ===== 小工具 ===== */
 const te = new TextEncoder();
 const td = new TextDecoder();
 const expectWordlistHash = '2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda';
 const curveN = secp.CURVE.n;
-
 const $ = id => document.getElementById(id);
-const toHex = (u8) => bytesToHex(u8);
+
+// WebCrypto SHA-256（统一入口）
+async function wc_sha256(bytes){
+  const buf = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const out = await crypto.subtle.digest('SHA-256', buf);
+  return new Uint8Array(out);
+}
+
 function concatBytes(...arrs){
   let len = 0; for(const a of arrs) len += a.length;
   const out = new Uint8Array(len);
@@ -127,9 +130,20 @@ function concatBytes(...arrs){
   return out;
 }
 function ser32(i){ const b = new Uint8Array(4); b[0]=(i>>>24)&255;b[1]=(i>>>16)&255;b[2]=(i>>>8)&255;b[3]=i&255; return b; }
-function ser256(i){ let hex = i.toString(16).padStart(64, '0'); return hexToBytes(hex); }
-function serP(P){ return secp.Point.fromHex(P).toRawBytes(true); }
-function hash160(data){ return ripemd160(sha256(data)); }
+
+// 异步 hash160 = RIPEMD160(SHA256(x))
+async function hash160_async(data){
+  const s1 = await wc_sha256(data);
+  return ripemd160(s1);
+}
+
+// Base58Check(payload || version+data) —— 双 SHA-256（异步）
+async function base58check_async(payload){
+  const s1 = await wc_sha256(payload);
+  const s2 = await wc_sha256(s1);
+  const checksum = s2.slice(0,4);
+  return base58encode(concatBytes(payload, checksum));
+}
 function base58encode(data){
   const ALPH='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
   let x = BigInt('0x'+bytesToHex(data));
@@ -138,12 +152,8 @@ function base58encode(data){
   for (let i=0;i<data.length && data[i]===0;i++) out = '1' + out;
   return out || '1';
 }
-function base58check(payload){
-  const checksum = sha256(sha256(payload)).slice(0,4);
-  return base58encode(concatBytes(payload, checksum));
-}
 
-/* ===== WebCrypto：PBKDF2 / HMAC-SHA512 ===== */
+// ===== WebCrypto：PBKDF2 / HMAC-SHA512 =====
 async function hmacSHA512(keyBytes, dataBytes){
   const key = await crypto.subtle.importKey('raw', keyBytes, { name:'HMAC', hash:'SHA-512' }, false, ['sign']);
   const sig = await crypto.subtle.sign('HMAC', key, dataBytes);
@@ -155,43 +165,28 @@ async function pbkdf2_sha512(passwordBytes, saltBytes, iterations, dkLen){
   return new Uint8Array(bits);
 }
 
-/* ===== BIP39 助记词 ===== */
+// ===== BIP39 助记词 =====
 let WORDS = null;
 async function loadWordlistOnce(){
   if (WORDS) return WORDS;
   const res = await fetch('./english.txt');
   const buf = new Uint8Array(await res.arrayBuffer());
-  const gotHash = bytesToHex(sha256(buf));
-  if (gotHash !== expectWordlistHash) {
-    throw new Error('english.txt 校验失败：SHA-256 不匹配');
-  }
+  const gotHash = bytesToHex(await wc_sha256(buf));  // WebCrypto
+  if (gotHash !== expectWordlistHash) throw new Error('english.txt 校验失败：SHA-256 不匹配');
   const text = td.decode(buf).replace(/\r/g,'').trim();
   WORDS = text.split('\n');
   return WORDS;
 }
+function bytesToBits(u8){ const bits=[]; for(const b of u8) for(let i=7;i>=0;i--) bits.push((b>>i)&1); return bits; }
 function bitsToIndices(bits, group=11){
-  const out = [];
-  for (let i=0;i<bits.length;i+=group){
-    let v=0;
-    for (let j=0;j<group;j++) v = (v<<1) | (bits[i+j]||0);
-    out.push(v);
-  }
-  return out;
+  const out=[]; for(let i=0;i<bits.length;i+=group){ let v=0; for(let j=0;j<group;j++) v=(v<<1)|(bits[i+j]||0); out.push(v); } return out;
 }
-function bytesToBits(u8){
-  const bits = [];
-  for (const b of u8) for (let i=7;i>=0;i--) bits.push((b>>i)&1);
-  return bits;
-}
-async function genMnemonic(entBits = 128){
+async function genMnemonic(entBits=128){
   if(!WORDS) await loadWordlistOnce();
-  const ENT = entBits;
-  const CS  = ENT / 32;
+  const ENT = entBits, CS = ENT/32;
   const ent = new Uint8Array(ENT/8); crypto.getRandomValues(ent);
-  const hash = sha256(ent);
-  const entBitsArr  = bytesToBits(ent);
-  const csBitsArr   = bytesToBits(hash).slice(0, CS);
-  const allBits     = entBitsArr.concat(csBitsArr);
+  const hash = await wc_sha256(ent);                 // WebCrypto
+  const allBits = bytesToBits(ent).concat(bytesToBits(hash).slice(0, CS));
   const idx = bitsToIndices(allBits, 11);
   const words = idx.map(i => WORDS[i]);
   return words.join(' ');
@@ -199,64 +194,69 @@ async function genMnemonic(entBits = 128){
 async function mnemonicToSeed(mnemonic, passphrase){
   const salt = te.encode('mnemonic' + (passphrase || '')).buffer;
   const pwd  = te.encode(mnemonic).buffer;
-  const dk   = await pbkdf2_sha512(new Uint8Array(pwd), new Uint8Array(salt), 2048, 64);
-  return dk;
+  return pbkdf2_sha512(new Uint8Array(pwd), new Uint8Array(salt), 2048, 64);
 }
 
-/* ===== BIP32：Root & CKDpriv ===== */
+// ===== xprv/xpub 序列化（异步 Base58Check）=====
+async function serializeXPUB_async(pub, chain, depth, parentFP, child){
+  const ver = new Uint8Array([0x04,0x88,0xB2,0x1E]); // xpub
+  const payload = concatBytes(ver, new Uint8Array([depth&255]), parentFP, ser32(child), chain, pub);
+  return await base58check_async(payload);
+}
+async function serializeXPRV_async(key, chain, depth, parentFP, child){
+  const ver = new Uint8Array([0x04,0x88,0xAD,0xE4]); // xprv
+  const payload = concatBytes(ver, new Uint8Array([depth&255]), parentFP, ser32(child), chain, new Uint8Array([0]), key);
+  return await base58check_async(payload);
+}
+
+// ===== BIP32：Root & CKDpriv（适配异步）=====
 async function bip32RootFromSeed(seed){
   const I = await hmacSHA512(te.encode('Bitcoin seed'), seed);
   const IL = I.slice(0,32), IR = I.slice(32);
-  let k = BigInt('0x'+bytesToHex(IL));
+  const k = BigInt('0x'+bytesToHex(IL));
   if (k === 0n || k >= curveN) throw new Error('Invalid master key');
-  const chain = IR;
-  const key32 = IL;
+  const key32 = IL, chain = IR, depth=0, child=0, parentFP=new Uint8Array([0,0,0,0]);
   const pub  = secp.getPublicKey(key32, true);
-  const depth=0, child=0, parentFP = new Uint8Array([0,0,0,0]);
-  const xprv = serializeXPRV(key32, chain, depth, parentFP, child);
-  const xpub = serializeXPUB(pub,  chain, depth, parentFP, child);
-  return { key: key32, chain, pub, depth, child, parentFP, xprv, xpub };
+  const xprv = await serializeXPRV_async(key32, chain, depth, parentFP, child);
+  const xpub = await serializeXPUB_async(pub,  chain, depth, parentFP, child);
+  return { key:key32, chain, pub, depth, child, parentFP, xprv, xpub };
 }
 async function CKDpriv(node, index, hardened){
   const { key, chain, depth, pub } = node;
   const idx = hardened ? (index | 0x80000000) : index;
-  let data;
-  if (hardened){
-    data = concatBytes(new Uint8Array([0]), key, ser32(idx));
-  }else{
-    const P = secp.getPublicKey(key, true);
-    data = concatBytes(P, ser32(idx));
-  }
+  const data = hardened ? concatBytes(new Uint8Array([0]), key, ser32(idx))
+                        : concatBytes(secp.getPublicKey(key, true), ser32(idx));
   const I = await hmacSHA512(chain, data);
   const IL = I.slice(0,32), IR = I.slice(32);
-  let ki = (BigInt('0x'+bytesToHex(IL)) + BigInt('0x'+bytesToHex(key))) % curveN;
+  const ki = (BigInt('0x'+bytesToHex(IL)) + BigInt('0x'+bytesToHex(key))) % curveN;
   if (ki === 0n) throw new Error('Invalid child key');
-  const keyChild = hexToBytes(ki.toString(16).padStart(64,'0'));
-  const chainChild = IR;
-  const depthChild = depth + 1;
-  const parentFP = hash160(pub).slice(0,4);
+  const keyChild = hexToBytes(ki.toString(16).padStart(64, '0'));
+  const chainChild = IR, depthChild = depth+1;
+  const parentFP = (await hash160_async(pub)).slice(0,4);  // WebCrypto
   const pubChild = secp.getPublicKey(keyChild, true);
-  const xprv = serializeXPRV(keyChild, chainChild, depthChild, parentFP, idx);
-  const xpub = serializeXPUB(pubChild, chainChild, depthChild, parentFP, idx);
-  return { key: keyChild, chain: chainChild, pub: pubChild, depth: depthChild, child: idx, parentFP, xprv, xpub };
+  const xprv = await serializeXPRV_async(keyChild, chainChild, depthChild, parentFP, idx);
+  const xpub = await serializeXPUB_async(pubChild, chainChild, depthChild, parentFP, idx);
+  return { key:keyChild, chain:chainChild, pub:pubChild, depth:depthChild, child:idx, parentFP, xprv, xpub };
 }
 
-/* ===== xprv/xpub 序列化 ===== */
-function serializeXPUB(pub, chain, depth, parentFP, child){
-  const ver = new Uint8Array([0x04,0x88,0xB2,0x1E]); // xpub
-  const payload = concatBytes(ver, new Uint8Array([depth&255]), parentFP, ser32(child), chain, pub);
-  return base58check(payload);
-}
-function serializeXPRV(key, chain, depth, parentFP, child){
-  const ver = new Uint8Array([0x04,0x88,0xAD,0xE4]); // xprv
-  const payload = concatBytes(ver, new Uint8Array([depth&255]), parentFP, ser32(child), chain, new Uint8Array([0]), key);
-  return base58check(payload);
-}
-
-/* ===== 绑定 UI ===== */
+// ===== 绑定 UI =====
 let gSeed = null;
 let gRoot = null;
 
+// 页面加载时自动加载词表并启用“生成”按钮
+document.addEventListener('DOMContentLoaded', async ()=>{
+  const tip = $('wl-tip');
+  try{
+    await loadWordlistOnce();
+    if (tip) tip.innerHTML = '<span class="ok">词表已加载并通过校验。</span>';
+    const btn = $('btn-gen'); if (btn) btn.disabled = false;
+  }catch(e){
+    if (tip) tip.innerHTML = '<span class="err">词表加载失败：'+(e?.message||e)+'</span>';
+    console.error(e);
+  }
+});
+
+// 仍保留“手动加载”按钮
 $('btn-load').onclick = async ()=>{
   const tip = $('wl-tip');
   try{
@@ -276,7 +276,6 @@ $('btn-gen').onclick = async ()=>{
     const pass = ($('in-pass').value||'').normalize('NFKD');
     const mnemonic = await genMnemonic(ent);
     const seed     = await mnemonicToSeed(mnemonic, pass);
-
     gSeed = seed;
 
     $('out-mnemonic').textContent = mnemonic;
@@ -317,5 +316,6 @@ $('btn-derive').onclick = async ()=>{
   }
 };
 </script>
+  
 </body>
 </html>
