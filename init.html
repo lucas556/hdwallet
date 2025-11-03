@@ -24,6 +24,14 @@
     .ok{color:var(--good)} .err{color:var(--bad)}
     .small{font-size:13px;color:var(--muted)}
 
+    /* 输入框（离线备份密码） */
+    input[type="password"]{
+      background:#0b1324;border:1px solid rgba(255,255,255,.08);
+      color:#e5e7eb;border-radius:10px;padding:10px 12px;min-width:240px;
+      outline:none
+    }
+    input[type="password"]::placeholder{color:#7f8da3}
+
     /* 助记词网格 */
     .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
     .cell{
@@ -47,6 +55,7 @@
       box-shadow:0 8px 22px rgba(0,0,0,.28);user-select:none
     }
     .hint{text-align:center;color:#9aa4b4}
+
     @media (max-width:700px){ .grid{grid-template-columns:repeat(2,1fr)} }
   </style>
 </head>
@@ -67,9 +76,26 @@
     <!-- B. 生成 & 展示（默认遮挡，点击显示 60s） -->
     <div class="card">
       <h3>步骤 B：生成助记词（默认整块遮挡；点击显示 60 秒）</h3>
+
+      <!-- 备份勾选 -->
       <div class="row">
         <label><input id="cb-backup" type="checkbox"> 生成并下载离线加密备份（仅 JSON 密文，不显示助记词）</label>
       </div>
+
+      <!-- 备份密码区块（默认隐藏，勾选时显示） -->
+      <div id="backup-area" style="display:none;margin:6px 0 2px 0">
+        <div class="small" style="margin-bottom:6px">
+          备份密码仅用于本地加密 JSON 文件，永不上传。要求：
+          <strong>≥ 8 位</strong>，包含<strong>大小写字母</strong>，并包含<strong>数字或特殊字符</strong>之一。
+        </div>
+        <div class="row" style="flex-wrap:wrap;gap:10px">
+          <input id="pw1" type="password" placeholder="备份密码">
+          <input id="pw2" type="password" placeholder="再次输入备份密码">
+        </div>
+        <div class="small" id="pw-tip"></div>
+      </div>
+
+      <!-- 生成按钮 -->
       <div class="row">
         <button id="btn-gen" disabled>2) 生成助记词</button>
         <span id="gen-tip" class="muted"></span>
@@ -103,6 +129,7 @@
 
     <div class="small" id="final"></div>
   </div>
+
 
 <script type="module">
 /* ===== 依赖（与当前 fido2.js 保持一致） ===== */
