@@ -105,7 +105,7 @@
   </div>
 
 <script type="module">
-/* ===== 依赖（保持与现有 fido2.js 对齐） ===== */
+/* ===== 依赖（与现有 fido2.js 保持一致） ===== */
 import {
   loadCredHex, saveCredHex,
   ensureCredentialWithChoice,
@@ -123,10 +123,10 @@ const REVEAL_MS = 60_000;
 
 /* ===== 状态 ===== */
 const state = {
-  selectedCredHex: null,   // 注册通过且数据库未存在记录时才赋值
-  sealed: null,            // { mnemo:{nonce,ciphertext}, saltHex, credId, rp_id, info }
-  sealedChains: null,      // 各链密文
-  branchesPub: null,       // 各链公开数据（仅 xpub/path）
+  selectedCredHex: null,  // 仅当“该 cred 数据库无记录”时才允许赋值
+  sealed: null,           // { mnemo:{nonce,ciphertext}, saltHex, credId, rp_id, info }
+  sealedChains: null,     // 各链密文
+  branchesPub: null,      // 各链公开数据（xpub/path）
   wordCount: 12,
   autoMaskTimer: null,
 };
@@ -149,54 +149,68 @@ function renderGrid(words){
 }
 function renderMasked(n=12){ renderGrid(Array.from({length:n},()=> '•••••')); }
 
-/* ===== 后端：按 credHex 查是否已存在 ===== */
-async function queryBundleByCred(credHex){
+/* ===== 通用：按 credHex 查是否已在库里（兼容你两种返回结构） ===== */
+async function fetchBundleByCred(credHex){
   const resp = await fetch(`${API_BASE}/bundles/by-cred/${credHex}`);
   if (resp.status === 404) return null;
   const data = await resp.json().catch(()=> ({}));
-  if (!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
-  return data.bundle || null;
+  if (!resp.ok || data?.ok === false) throw new Error(data?.error || `HTTP ${resp.status}`);
+
+  // 支持两种后端形态：{bundle} 或 {count, items[]} / {results[]}
+  if (data.bundle) return data.bundle;
+  if (Array.isArray(data.items) && data.items.length) return data.items[0];
+  if (Array.isArray(data.results) && data.results.length) return data.results[0];
+  return null;
 }
 
-/* ===== 初始：强制禁止生成，直到完成“注册并通过查库” ===== */
+/* ===== 初始：禁止生成，直到通过 A 步骤绑定 cred 并确认库中无记录 ===== */
 document.addEventListener('DOMContentLoaded', ()=>{
   enable('btn-gen', false);
 });
 
-/* ===== 步骤 A：只注册凭证 → 立刻查库 → 已存在则禁止并跳转 ===== */
+/* ===== 步骤 A：注册/选择凭证 → 立刻查库 → 若存在则禁止并跳转 ===== */
 $('btn-register').onclick = async ()=>{
   const tip=$('reg-tip');
   try{
-    // 注册/选择 discoverable 凭证（该函数可能复用已有 discoverable 凭证或创建新的）
-    const res = await ensureCredentialWithChoice();
-    if (!res?.id_hex) throw new Error('未获得有效凭证');
-    const cred = res.id_hex;
+    const res  = await ensureCredentialWithChoice();      // 可能选择已有 discoverable，或创建新凭证
+    const cred = res?.id_hex;
+    if (!cred) throw new Error('未获得有效凭证');
     saveCredHex(cred);
 
-    // 立刻查库：如果已存在 -> 禁止生成并跳转
-    const exists = await queryBundleByCred(cred);
+    const exists = await fetchBundleByCred(cred);
     if (exists) {
+      // ★ 已存在：严格禁止继续，并跳转
+      state.selectedCredHex = null;
       enable('btn-gen', false);
-      alert('该凭证已在数据库中存在记录，禁止重复注册与生成助记词，现在跳转到钱包页面。');
-      location.href = `wallet.html?cred=${cred}`;
-      return; // 中断
+      if (tip) tip.innerHTML = `<span class="err">该凭证已在数据库注册（禁止重复初始化），即将跳转钱包页。</span>`;
+      setTimeout(()=>{ location.href = `wallet.html?cred=${cred}`; }, 1000);
+      return;
     }
 
-    // 数据库无记录：允许后续生成
+    // ★ 不存在：允许继续
     state.selectedCredHex = cred;
     enable('btn-gen', true);
     if (tip) tip.innerHTML = `<span class="ok">已注册/绑定凭证（id: ${cred.slice(0,16)}…），可继续生成助记词。</span>`;
   }catch(e){
     console.error(e);
-    if (tip) tip.innerHTML = `<span class="err">凭证注册失败：${e?.message||e}</span>`;
+    if (tip) tip.innerHTML = `<span class="err">凭证注册/绑定失败：${e?.message||e}</span>`;
   }
 };
 
-/* ===== 步骤 B：生成（要求已通过步骤A并绑定 selectedCredHex） ===== */
+/* ===== 步骤 B：生成（生成前再次校验该 cred 是否突然已被写库） ===== */
 $('btn-gen').onclick = async ()=>{
   const tip=$('gen-tip');
   try{
-    if(!state.selectedCredHex) throw new Error('请先完成步骤 A 的“注册并查库”。');
+    if(!state.selectedCredHex) throw new Error('请先完成步骤 A。');
+
+    // 二次防线：生成前再查一次库（防止并发或用户开多标签页）
+    const again = await fetchBundleByCred(state.selectedCredHex);
+    if (again) {
+      enable('btn-gen', false);
+      tip.innerHTML = `<span class="err">该凭证刚刚已在数据库出现，禁止继续初始化，正在跳转钱包页。</span>`;
+      setTimeout(()=>{ location.href = `wallet.html?cred=${state.selectedCredHex}`; }, 1000);
+      return;
+    }
 
     // 生成助记词 & 分支
     const mnemonic = genMnemonic(128);
@@ -205,12 +219,15 @@ $('btn-gen').onclick = async ()=>{
     const seed     = mnemonicToSeed(mnemonic,'');
     const branches = exportBranches(seed);
 
-    // 用“步骤A绑定那把凭证 + 随机盐”派生 KEK 加密助记词与各链
+    // 用步骤 A 绑定的同一把凭证 + 随机盐 派生 KEK 加密
     const salt = crypto.getRandomValues(new Uint8Array(32));
     const { kek } = await deriveKEKWithSalt(state.selectedCredHex, salt);
 
+    // 助记词密文
     const mnEnc = await aesGcmEncryptStr(kek, mnemonic);
-    const enc   = async (s)=> s ? await aesGcmEncryptStr(kek, s) : null;
+
+    // 各链密文（不同 nonce，绝不复用）
+    const enc = async (s)=> s ? await aesGcmEncryptStr(kek, s) : null;
     const sealedChains = {
       ETH:  { path: branches.ETH.path,  PubEnc: await enc(branches.ETH.xpub),   PrivEnc: await enc(branches.ETH.xprv) },
       BTC:  { path: branches.BTC.path,  PubEnc: await enc(branches.BTC.xpub_z), PrivEnc: await enc(branches.BTC.xprv_z) },
@@ -218,7 +235,7 @@ $('btn-gen').onclick = async ()=>{
       TRON: { path: branches.TRON.path, PubEnc: await enc(branches.TRON.xpub),  PrivEnc: await enc(branches.TRON.xprv) },
     };
 
-    // 保留公开 xpub
+    // 仅保留公开部分
     state.branchesPub = {
       ETH:  { path: branches.ETH.path,  xpub: branches.ETH.xpub },
       BTC:  { path: branches.BTC.path,  xpub_z: branches.BTC.xpub_z },
@@ -234,7 +251,6 @@ $('btn-gen').onclick = async ()=>{
       }
     }
 
-    // 保存密文与 KEK 元信息
     const toHex = (u8) => [...new Uint8Array(u8)].map(b=>b.toString(16).padStart(2,'0')).join('');
     state.sealed = {
       mnemo:   { nonce: mnEnc.nonce, ciphertext: mnEnc.ciphertext },
@@ -245,7 +261,7 @@ $('btn-gen').onclick = async ()=>{
     };
     state.sealedChains = sealedChains;
 
-    // UI：显示卡片（默认整块遮挡）
+    // UI：默认整块遮挡
     showCard();
     renderMasked(state.wordCount);
     showMask();
@@ -264,6 +280,7 @@ $('btn-reveal').onclick = async ()=>{
     if(!state.selectedCredHex || state.selectedCredHex !== state.sealed.credId){
       throw new Error('当前凭证与绑定的不一致，无法解锁。');
     }
+    // 仍然再查一次库（允许用户查看，但这里不中断写库逻辑；只是解密显示）
     const { kek } = await deriveKEKWithSalt(state.selectedCredHex, state.sealed.saltHex);
     const mnemonic = await aesGcmDecryptStr(kek, state.sealed.mnemo);
     const words    = mnemonic.trim().split(/\s+/);
@@ -285,7 +302,7 @@ $('btn-reveal').onclick = async ()=>{
   }
 };
 
-/* ===== 步骤 C：写库（只写密文+元信息）。这里保持你原有逻辑即可 ===== */
+/* ===== 步骤 C：写库（写入前最后再校验一次，若已存在则禁止写库并跳转） ===== */
 $('btn-encrypt').onclick = async ()=>{
   const tip=$('encrypt-tip');
   try{
@@ -293,6 +310,15 @@ $('btn-encrypt').onclick = async ()=>{
     if(!state.sealed || !state.sealedChains) throw new Error('尚未生成');
     if(state.selectedCredHex !== state.sealed.credId){
       throw new Error('当前凭证与已绑定的不一致，禁止写库。');
+    }
+
+    // 最终防线：写库前再查一次
+    const exists = await fetchBundleByCred(state.selectedCredHex);
+    if (exists) {
+      tip.textContent = '';
+      alert('该凭证已在数据库注册，禁止重复写库，正在跳转钱包页。');
+      location.href = `wallet.html?cred=${state.selectedCredHex}`;
+      return;
     }
 
     const bundle = {
