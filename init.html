@@ -101,127 +101,213 @@
   </div>
 
 <script type="module">
-/* ========= 导入（与现有 fido2.js 对齐；不新增导出名） ========= */
 import {
-  loadCredHex,
-  saveCredHex,
-  ensureCredentialWithChoice,
+  loadCredHex, saveCredHex, clearCredHex,
+  ensureCredentialWithChoice, deriveKEK, deriveKEKWithSalt,
+  aesGcmEncryptStr, aesGcmDecryptStr, discoverCredentialHex, RP_ID
 } from './js/fido2.js';
+import { genMnemonic, mnemonicToSeed, exportBranches } from './js/hdwallet-core.js';
 
-/* ========= 你的 Worker API 基址（保持你原来的常量） ========= */
-const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';
+const API_BASE  = 'https://wallet.lucas-l-shang.workers.dev';
+const REVEAL_MS = 60_000;
 
-/* ========= 本会话绑定：后续步骤要强制使用同一把凭证 ========= */
-let selectedCredHex = null;
-function setSelectedCredHex(hex) {
-  selectedCredHex = hex;
-  window.__selectedCredHex = hex;          // 提供给步骤 B/C 复用
-  const btnGen = document.getElementById('btn-gen');
-  if (btnGen) btnGen.disabled = !hex;      // 只有选定了凭证才能进入下一步
-}
-
-/* ========= 小工具 ========= */
-// 1) 尝试“枚举本域”的 discoverable credential（不传 allowCredentials）
-//    - 成功返回十六进制 rawId；失败/无则返回 null
-async function discoverExistingCredentialHex() {
-  // 先看本地缓存
-  const cached = loadCredHex?.();
-  if (cached) return cached;
-
-  if (!navigator.credentials?.get) return null;
-  try {
-    const cred = await navigator.credentials.get({
-      publicKey: {
-        userVerification: 'preferred',
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        timeout: 60000,
-        // 不设置 allowCredentials：让设备自行枚举 discoverable 凭证
-      }
-    });
-    if (cred?.rawId) {
-      const buf = new Uint8Array(cred.rawId);
-      let hex = ''; for (const x of buf) hex += x.toString(16).padStart(2, '0');
-      saveCredHex?.(hex);
-      return hex;
-    }
-  } catch (_) {
-    // 用户取消 / 无 discoverable 凭证 → 视为没有
-  }
-  return null;
-}
-
-// 2) 查数据库：这把 credential 是否已有 bundle 记录
-async function fetchBundleByCred(credHex) {
-  try {
-    const res = await fetch(`${API_BASE}/bundles/by-cred/${encodeURIComponent(credHex)}`, { method: 'GET' });
-    if (!res.ok) return null;                          // 404/403 等视为无
-    const data = await res.json().catch(() => null);
-    return (data?.ok && data?.bundle) ? data.bundle : null;
-  } catch {
-    return null;
-  }
-}
-
-/* ========= 页面初始：若本地已有缓存的凭证，提示“可用”但不自动跳转 ========= */
-document.addEventListener('DOMContentLoaded', () => {
-  try {
-    const cached = loadCredHex?.();
-    if (cached) {
-      const tip = document.getElementById('reg-tip');
-      if (tip) tip.innerHTML = `<span class="ok">检测到本地凭证缓存（id: ${cached.slice(0,16)}…），可继续。</span>`;
-      setSelectedCredHex(cached);
-    }
-  } catch {}
+const $  = id => document.getElementById(id);
+const on = (root, ev, sel, fn) => root.addEventListener(ev, e => {
+  const t = e.target.closest(sel);
+  if (t) fn(e, t);
 });
 
-/* ========= 步骤 A：按钮逻辑 ========= */
-document.getElementById('btn-register').onclick = async () => {
-  const tip = document.getElementById('reg-tip');
+const state = {
+  selectedCredHex: null,
+  sealed: null,           // { saltHex, enc:{nonce,ciphertext} }
+  branchesEnc: null,      // 各链的密文
+  wordCount: 12,
+  autoMaskTimer: null,
+};
 
-  const say = (html) => { if (tip) tip.innerHTML = html; };
+function enableBtn(id, en=true){
+  const b = $(id); if (!b) return;
+  b.disabled = !en;
+  if (en) { b.removeAttribute('disabled'); b.style.pointerEvents = ''; b.style.opacity=''; }
+}
 
-  try {
-    // 1) 先枚举行内可发现凭证
-    const foundHex = await discoverExistingCredentialHex();
+function show(id, on=true){ const n=$(id); if(n) n.style.display = on ? '' : 'none'; }
+function setHTML(id, html){ const n=$(id); if(n) n.innerHTML = html; }
+function setText(id, txt){ const n=$(id); if(n) n.textContent = txt; }
 
-    if (foundHex) {
-      // 1.1 查库：这把钥匙是否已有记录？
-      const existing = await fetchBundleByCred(foundHex);
-      if (existing) {
-        // 已存在记录 → 直接跳 wallet.html
-        say('<span class="ok">检测到已有凭证，且数据库存在记录，正在跳转…</span>');
-        location.href = `wallet.html?cred=${encodeURIComponent(foundHex)}`;
-        return;
-      }
+function clearAutoMask(){
+  if (state.autoMaskTimer){ clearTimeout(state.autoMaskTimer); state.autoMaskTimer=null; }
+}
 
-      // 1.2 库中没有记录 → 询问是否沿用本把钥匙进行初始化
-      const okUse = confirm(
-        `检测到本域凭证：${foundHex.slice(0,16)}…\n数据库未发现记录。\n是否沿用该凭证用于初始化？`
-      );
-      if (okUse) {
-        setSelectedCredHex(foundHex);
-        say(`<span class="ok">已选择沿用凭证（id: ${foundHex.slice(0,16)}…）。可进行下一步。</span>`);
-        return;
-      }
-      // 用户不沿用 → 继续走注册流程
+function renderMaskedGrid(n){
+  const grid = $('mnemo-grid'); if(!grid) return;
+  grid.innerHTML = '';
+  for (let i=0;i<n;i++) {
+    const d = document.createElement('div');
+    d.className = 'cell';
+    d.innerHTML = `<span class="badge">${i+1}</span><span class="word">•••••</span>`;
+    grid.appendChild(d);
+  }
+  show('mnemo-card', true);
+  show('mnemo-mask', true);
+  show('btn-reveal', true);
+}
+
+async function stepA_registerOrUse(){
+  const tip = $('reg-tip');
+  try{
+    const res = await ensureCredentialWithChoice(); // 有则用，无则注册
+    state.selectedCredHex = res?.id_hex || loadCredHex();
+    if (!state.selectedCredHex) throw new Error('未能获得凭证 ID');
+    tip.innerHTML = res?.created
+      ? `<span class="ok">已注册新凭证（id: ${state.selectedCredHex.slice(0,16)}…）。</span>`
+      : `<span class="ok">已选择沿用凭证（id: ${state.selectedCredHex.slice(0,16)}…）。</span>`;
+
+    console.log('[A] selectedCredHex =', state.selectedCredHex);
+    // 多重解禁，杜绝点不动
+    enableBtn('btn-gen', true);
+  }catch(e){
+    console.error('[A] error:', e);
+    tip.innerHTML = `<span class="err">注册/选择失败：${e?.message||e}</span>`;
+    enableBtn('btn-gen', false);
+  }
+}
+
+async function stepB_generate(){
+  const tip = $('gen-tip');
+  try{
+    if (!state.selectedCredHex){
+      tip.innerHTML = `<span class="err">请先完成步骤 A。</span>`;
+      return;
+    }
+    // 1) 生成助记词 + 各链
+    const mnemonic = genMnemonic(128);
+    const words    = mnemonic.trim().split(/\s+/);
+    state.wordCount = words.length || 12;
+    const seed     = mnemonicToSeed(mnemonic, '');
+    const branches = exportBranches(seed);
+
+    // 2) 用同一把凭证派生 KEK（deriveKEK 会发起 WebAuthn）
+    const { kek, salt, toHex, credential_id } = await deriveKEK({ autoRegister:false });
+    if (credential_id !== state.selectedCredHex) {
+      throw new Error('步骤 A 与步骤 B 的凭证不一致');
     }
 
-    // 2) 无可用凭证或用户不沿用 → 注册/复用（由 ensureCredentialWithChoice 决定新建或复用）
-    say('请触摸安全钥匙以注册/选择凭证…');
-    const res = await ensureCredentialWithChoice();    // { ok, id_hex, created }
-    const hex = res?.id_hex;
-    if (!hex) throw new Error('未获得凭证 ID');
+    // 3) 加密助记词 + 各链（不同 nonce）
+    state.sealed = {
+      saltHex: toHex(salt),
+      enc: await aesGcmEncryptStr(kek, mnemonic)
+    };
+    const enc = async s => s ? await aesGcmEncryptStr(kek, s) : null;
+    state.branchesEnc = {
+      ETH:  { path: branches.ETH.path,  PubEnc: await enc(branches.ETH.xpub),   PrivEnc: await enc(branches.ETH.xprv) },
+      BTC:  { path: branches.BTC.path,  PubEnc: await enc(branches.BTC.xpub_z), PrivEnc: await enc(branches.BTC.xprv_z) },
+      EOS:  { path: branches.EOS.path,  PubEnc: await enc(branches.EOS.xpub),   PrivEnc: await enc(branches.EOS.xprv) },
+      TRON: { path: branches.TRON.path, PubEnc: await enc(branches.TRON.xpub),  PrivEnc: await enc(branches.TRON.xprv) },
+    };
+    // 清明文
+    try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
+    branches.ETH.xprv = branches.EOS.xprv = branches.TRON.xprv = null;
+    branches.BTC.xprv_z = null;
 
-    setSelectedCredHex(hex);
-    say(res?.created
-      ? `<span class="ok">已注册新凭证（id: ${hex.slice(0,16)}…）。可进行下一步。</span>`
-      : `<span class="ok">已选择现有凭证（id: ${hex.slice(0,16)}…）。可进行下一步。</span>`
-    );
-  } catch (e) {
-    console.error(e);
-    say(`<span class="err">处理失败：${e?.message || e}</span>`);
+    // 4) UI
+    renderMaskedGrid(state.wordCount);
+    setText('gen-tip','');
+    enableBtn('btn-encrypt', true);
+    console.log('[B] sealed & branchesEnc ready.');
+  }catch(e){
+    console.error('[B] error:', e);
+    setHTML('gen-tip', `<span class="err">生成/加密失败：${e?.message||e}</span>`);
   }
-};
+}
+
+async function revealOnce(){
+  try{
+    if (!state.sealed || !state.selectedCredHex) return;
+    clearAutoMask();
+
+    const { kek, credential_id } = await deriveKEKWithSalt(state.selectedCredHex, state.sealed.saltHex);
+    if (credential_id !== state.selectedCredHex) throw new Error('凭证不一致');
+
+    const mnemonic = await aesGcmDecryptStr(kek, state.sealed.enc);
+    const words = mnemonic.trim().split(/\s+/);
+
+    const grid = $('mnemo-grid'); grid.innerHTML='';
+    words.forEach((w,i)=>{
+      const d = document.createElement('div');
+      d.className = 'cell';
+      d.innerHTML = `<span class="badge">${i+1}</span><span class="word">${w}</span>`;
+      grid.appendChild(d);
+    });
+    show('mnemo-mask', false);
+
+    state.autoMaskTimer = setTimeout(()=>{
+      renderMaskedGrid(state.wordCount);
+      try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
+    }, REVEAL_MS);
+  }catch(e){
+    console.error('[reveal] error:', e);
+    alert('解锁失败：'+(e?.message||e));
+  }
+}
+
+async function stepC_write(){
+  const tip = $('encrypt-tip');
+  try{
+    if (!state.selectedCredHex) throw new Error('尚未绑定 FIDO2 凭证');
+    if (!state.branchesEnc || !state.sealed) throw new Error('请先生成助记词（并已加密）');
+
+    tip.textContent = '正在写入…';
+    const bundle = {
+      KEKInfo:{ rp_id: RP_ID, info:'wallet-priv-bundle-v1', salt: state.sealed.saltHex, credential_id: state.selectedCredHex },
+      chains: {
+        ETH:  { path: state.branchesEnc.ETH.path,  PubEnc: state.branchesEnc.ETH.PubEnc,  PrivEnc: state.branchesEnc.ETH.PrivEnc },
+        BTC:  { path: state.branchesEnc.BTC.path,  PubEnc: state.branchesEnc.BTC.PubEnc,  PrivEnc: state.branchesEnc.BTC.PrivEnc },
+        EOS:  { path: state.branchesEnc.EOS.path,  PubEnc: state.branchesEnc.EOS.PubEnc,  PrivEnc: state.branchesEnc.EOS.PrivEnc },
+        TRON: { path: state.branchesEnc.TRON.path, PubEnc: state.branchesEnc.TRON.PubEnc, PrivEnc: state.branchesEnc.TRON.PrivEnc },
+      }
+    };
+
+    const resp = await fetch(`${API_BASE}/bundles`, {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ user_id:'web-ui', note:'init via UI', bundle })
+    });
+    const data = await resp.json().catch(()=> ({}));
+    if (!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+
+    tip.textContent = '';
+    alert(`写入成功：bundle_id=${data.bundle_id}`);
+  }catch(e){
+    console.error('[C] write error:', e);
+    tip.textContent = '';
+    alert('写库失败：'+(e?.message||e));
+  }
+}
+
+/* ---------- 事件委托绑定（无论元素何时出现都能点） ---------- */
+on(document, 'click', '#btn-register', (e)=>{ e.preventDefault(); stepA_registerOrUse(); });
+on(document, 'click', '#btn-gen',      (e)=>{ e.preventDefault(); stepB_generate(); });
+on(document, 'click', '#btn-reveal',   (e)=>{ e.preventDefault(); revealOnce(); });
+on(document, 'click', '#btn-encrypt',  (e)=>{ e.preventDefault(); stepC_write(); });
+
+/* ---------- 启动时做一次静默探测，探测到则解禁 B ---------- */
+(async ()=>{
+  try{
+    const found = await discoverCredentialHex();
+    if (found) {
+      state.selectedCredHex = found;
+      setHTML('reg-tip', `<span class="ok">已选择沿用凭证（id: ${found.slice(0,16)}…）。可进行下一步。</span>`);
+      enableBtn('btn-gen', true);
+      console.log('[init] discovered cred:', found);
+    } else {
+      setHTML('reg-tip', `<span class="muted">未探测到本域凭证，请先注册。</span>`);
+      enableBtn('btn-gen', false);
+      console.log('[init] no cred discovered');
+    }
+  }catch(e){
+    console.error('[init] discover error:', e);
+  }
+})();
 </script>
 
 </body>
