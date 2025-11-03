@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>我的钱包 · 已注册信息</title>
+  <style>
+    :root{ --bg:#0b1220; --card:#0f1724; --line:#1f2937; --text:#e5e7eb; --muted:#94a3b8; --accent:#60a5fa; --good:#10b981; --bad:#ef4444; }
+    html,body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif;}
+    .wrap{max-width:980px;margin:40px auto;padding:0 18px}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:20px;box-shadow:0 12px 34px rgba(0,0,0,.35)}
+    h1{margin:0 0 10px}
+    .muted{color:var(--muted)}
+    .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+    .pill{background:#0f1a33;border:1px solid rgba(255,255,255,.08);padding:6px 10px;border-radius:999px}
+    .btn{background:linear-gradient(180deg,#0f172a,#091427);border:1px solid rgba(255,255,255,.1);color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer}
+    .btn:hover{filter:brightness(1.06)}
+    table{width:100%;border-collapse:separate;border-spacing:0 10px;margin-top:12px}
+    th{color:#cbd5e1;font-weight:600;text-align:left;padding:6px 10px}
+    td{background:#0c1426;border:1px solid rgba(255,255,255,.06);padding:10px;border-radius:10px}
+    .id{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace}
+    .ok{color:var(--good)} .err{color:var(--bad)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>已注册/保存记录</h1>
+      <div id="head-tip" class="muted" style="margin-bottom:10px">正在读取…</div>
+
+      <div class="row" style="margin-bottom:12px">
+        <span class="pill">凭证 ID：<span id="cred-short" class="id"></span></span>
+        <span class="pill">总记录：<span id="total">0</span></span>
+        <button class="btn" id="go-init">新建/初始化</button>
+        <button class="btn" id="refresh">刷新</button>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th style="width:28%">bundle_id</th>
+            <th style="width:20%">创建时间</th>
+            <th style="width:16%">rp_id</th>
+            <th style="width:16%">info</th>
+            <th style="width:20%">note</th>
+          </tr>
+        </thead>
+      </table>
+
+      <div id="list"></div>
+
+      <div class="muted" style="margin-top:14px">
+        仅展示最近 20 条。需要查看更多或详情页可以在 Worker/D1 侧扩展接口。
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    // ====== 与 index.html 保持一致 ======
+    const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';
+
+    // 工具
+    const $ = id => document.getElementById(id);
+    const qs = new URLSearchParams(location.search);
+    const credHex = qs.get('cred') || '';
+    const hintedCount = parseInt(qs.get('count') || '0', 10);
+
+    const headTip = $('head-tip');
+    const listBox = $('list');
+    const totalEl = $('total');
+    const credShortEl = $('cred-short');
+
+    function short(hex){
+      if (!hex) return '(空)';
+      return hex.slice(0,12) + '…' + hex.slice(-8);
+    }
+    function ts2str(s){
+      if (!s) return '';
+      const d = new Date((Number(s)||0)*1000);
+      return d.toLocaleString();
+    }
+    function row(item){
+      const el = document.createElement('table');
+      el.innerHTML = `
+        <tbody>
+          <tr>
+            <td class="id" style="width:28%">${item.bundle_id}</td>
+            <td style="width:20%">${ts2str(item.created_at)}</td>
+            <td style="width:16%">${item.rp_id||''}</td>
+            <td style="width:16%">${item.info||''}</td>
+            <td style="width:20%">${item.note||''}</td>
+          </tr>
+        </tbody>
+      `;
+      return el;
+    }
+
+    async function load(){
+      try{
+        if (!credHex){
+          headTip.innerHTML = '<span class="err">缺少凭证参数。</span>';
+          return;
+        }
+        headTip.textContent = '正在向服务器查询…';
+        listBox.innerHTML = '';
+        totalEl.textContent = '0';
+        credShortEl.textContent = short(credHex);
+
+        const r = await fetch(`${API_BASE}/bundles/by-cred/${encodeURIComponent(credHex)}`);
+        const j = await r.json().catch(()=> ({}));
+        if (!r.ok || !j?.ok){
+          headTip.innerHTML = '<span class="err">查询失败：'+(j?.error || ('HTTP '+r.status))+'</span>';
+          return;
+        }
+
+        totalEl.textContent = j.count|0;
+        headTip.innerHTML = '<span class="ok">查询成功。</span>';
+
+        const items = (j.items || []);
+        if (items.length === 0){
+          const empty = document.createElement('div');
+          empty.className = 'muted';
+          empty.textContent = '暂无记录。';
+          listBox.appendChild(empty);
+          return;
+        }
+        for (const it of items){
+          listBox.appendChild(row(it));
+        }
+      }catch(e){
+        console.error(e);
+        headTip.innerHTML = '<span class="err">异常：'+(e?.message||e)+'</span>';
+      }
+    }
+
+    $('go-init').onclick = ()=>{
+      // 跳回初始化（可保留 cred 以便后续一致性校验）
+      const url = new URL('./init.html', location.href);
+      if (credHex) url.searchParams.set('cred', credHex);
+      location.href = url.toString();
+    };
+    $('refresh').onclick = load;
+
+    // 首次渲染：显示 index 传来的 count，随后真实查询覆盖
+    if (hintedCount > 0){
+      totalEl.textContent = hintedCount;
+      credShortEl.textContent = short(credHex);
+      headTip.textContent = '正在加载…';
+    }
+    load();
+  </script>
+</body>
+</html>
