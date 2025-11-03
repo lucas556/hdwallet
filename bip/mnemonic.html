@@ -107,13 +107,11 @@
 import { sha256 }     from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/sha256.js?module';
 import { ripemd160 }  from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/ripemd160.js?module';
 import { keccak_256 } from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/sha3.js?module';
-import { bytesToHex, hexToBytes }
-  from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/utils.js?module';
 
-/* ===== 内置 bytes<->hex 工具，避免 utils 导出差异 ===== 
+/* ===== 内置 bytes<->hex 工具，避免 utils 导出差异 ===== */
 function bytesToHex(u8){ let s=''; for (let i=0;i<u8.length;i++) s+=u8[i].toString(16).padStart(2,'0'); return s; }
 function hexToBytes(hex){ const h=hex.replace(/^0x/i,''); const out=new Uint8Array(h.length/2); for(let i=0;i<out.length;i++) out[i]=parseInt(h.slice(i*2,i*2+2),16); return out; }
-*/
+
 
 /* ===== 小工具 ===== */
 const te = new TextEncoder();
