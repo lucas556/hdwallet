@@ -19,11 +19,25 @@
   }
   button{cursor:pointer}
   button:hover{filter:brightness(1.08)}
-  pre{background:#0a1224;border:1px solid #1d2a44;border-radius:10px;padding:12px;overflow:auto}
+  /* 让超长十六进制 / xpub 自动换行且不溢出 */
+pre{
+  background:#0a1224;
+  border:1px solid #1d2a44;
+  border-radius:10px;
+  padding:12px;
+  max-width:100%;
+  white-space:pre-wrap;     /* 允许换行 */
+  word-break:break-all;     /* 任意位置断行（适合 hex/xpub） */
+  overflow-wrap:anywhere;   /* 现代浏览器的保险 */
+  overflow:auto;            /* 仍允许滚动 */
+}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:1000px){ .grid{grid-template-columns:1fr} } /* 提前在窄屏改为单列 */
+.wrap{max-width:980px;margin:32px auto;padding:0 16px;overflow-x:hidden} /* 保险：禁止横向溢出条 */
+  
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .ok{color:var(--good)} .err{color:var(--bad)}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  @media (max-width:760px){.grid{grid-template-columns:1fr}}
+
 </style>
 </head>
 <body>
