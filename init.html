@@ -101,132 +101,186 @@
   </div>
 
 <script type="module">
-/* ========= 导入 ========= */
+/* ===== 依赖 ===== */
 import {
-  loadCredHex,
-  saveCredHex,
   registerNewCredential,
-  deriveKEKWithSalt,   // 供步骤 B/C 绑定同一把凭证时使用
+  deriveKEKWithSalt,
+  aesGcmEncryptStr,
+  aesGcmDecryptStr
 } from './js/fido2.js';
 
-// 你的 Worker API（按需修改）
-const API_BASE = 'https://wallet.lucas-l-shang.workers.dev';
+import { genMnemonic, mnemonicToSeed, exportBranches } from './js/hdwallet-core.js';
 
-/* ========= 全局状态（本次会话绑定用哪把凭证） ========= */
-let selectedCredHex = null;
-function setSelectedCredHex(hex){
-  selectedCredHex = hex;
-  // 供其它步骤使用（B/C 从这里读同一把凭证）
-  window.__selectedCredHex = hex;
-  const btnGen = document.getElementById('btn-gen');
-  if (btnGen) btnGen.disabled = !hex;
-}
+/* ===== 常量与状态 ===== */
+const API_BASE   = 'https://wallet.lucas-l-shang.workers.dev';
+const REVEAL_MS  = 60_000;  // 展示 60 秒
 
-/* ========= 工具函数 ========= */
-
-// 发现本域 discoverable credential：优先用本地缓存，
-// 若无缓存则调用 WebAuthn 枚举（不传 allowCredentials）
-async function discoverExistingCredentialHex() {
-  // 1) 本地缓存优先
-  const cached = loadCredHex?.();
-  if (cached) return cached;
-
-  // 2) 枚举 discoverable credentials
-  if (!navigator.credentials?.get) return null;
-  try {
-    const cred = await navigator.credentials.get({
-      publicKey: {
-        userVerification: 'preferred',
-        challenge: crypto.getRandomValues(new Uint8Array(32)),
-        timeout: 60000,
-        // 不设置 allowCredentials：让设备自行枚举
-      }
-    });
-    if (cred?.rawId) {
-      const b = new Uint8Array(cred.rawId);
-      let hex = ''; for (const x of b) hex += x.toString(16).padStart(2,'0');
-      saveCredHex?.(hex);
-      return hex;
-    }
-  } catch (_) {
-    // 用户取消 / 没有 discoverable 凭证，都当无
+let selectedCredHex = '';   // 步骤 A 注册得到的唯一凭证
+let sealed = null;          // 生成阶段产物（只存密文）
+/*
+sealed = {
+  credId, rp_id, info, saltHex,
+  mnemonicEnc:{nonce,ciphertext},
+  chains:{
+    ETH:{ path, PubEnc:null, PrivEnc:{nonce,ciphertext} },
+    BTC:{ ... }, EOS:{...}, TRON:{...}
   }
-  return null;
+}
+*/
+let revealTimer = null;
+
+/* ===== DOM 工具 ===== */
+const $ = id => document.getElementById(id);
+function clearTimer(){ if(revealTimer){ clearTimeout(revealTimer); revealTimer=null; } }
+function maskAll(note=''){ $('mnemo-mask').style.display='flex'; if(note) $('mask-hint').textContent=note; }
+function unmask(){ $('mnemo-mask').style.display='none'; }
+function renderMaskedGrid(n){
+  const grid=$('mnemo-grid'); grid.innerHTML='';
+  for(let i=0;i<n;i++){
+    const d=document.createElement('div'); d.className='cell';
+    d.innerHTML=`<span class="badge">${i+1}</span><span>•••••</span>`;
+    grid.appendChild(d);
+  }
+}
+function renderWords(words){
+  const g=$('mnemo-grid'); g.innerHTML='';
+  words.forEach((w,i)=>{
+    const d=document.createElement('div'); d.className='cell';
+    d.innerHTML = `<span class="badge">${i+1}</span><span>${w}</span>`;
+    g.appendChild(d);
+  });
 }
 
-// 查库：凭证是否已有 bundle 记录
-async function checkBundleByCred(credHex) {
-  const url = `${API_BASE}/bundles/by-cred/${encodeURIComponent(credHex)}`;
+/* ===== A：注册新的凭证 ===== */
+$('btn-register').onclick = async ()=>{
+  const tip=$('reg-tip');
   try{
-    const res = await fetch(url, { method: 'GET' });
-    if (!res.ok) return null; // 404/403 等 => 视为无记录
-    const data = await res.json().catch(()=>null);
-    // 约定：{ ok:true, bundle:{...} }
-    if (data?.ok && data?.bundle) return data.bundle;
-  }catch{}
-  return null;
-}
-
-/* ========= 初始：如果本地已有缓存的凭证，则提示“可用”，但不自动跳转 ========= */
-document.addEventListener('DOMContentLoaded', ()=>{
-  try{
-    const cached = loadCredHex?.();
-    if (cached) {
-      const tip = document.getElementById('reg-tip');
-      if (tip) tip.innerHTML = `<span class="ok">检测到本地凭证缓存（id: ${cached.slice(0,16)}…），可继续。</span>`;
-      setSelectedCredHex(cached); // 允许进入步骤 B
-    }
-  }catch{}
-});
-
-/* ========= 步骤 A：注册/选择凭证（含两种分支） ========= */
-document.getElementById('btn-register').onclick = async ()=>{
-  const tip = document.getElementById('reg-tip');
-
-  try {
-    // 1) 先探测是否已有 discoverable credential
-    const foundHex = await discoverExistingCredentialHex();
-
-    if (foundHex) {
-      // 1.1 有凭证 → 查数据库
-      const exists = await checkBundleByCred(foundHex);
-      if (exists) {
-        // 数据库中已有记录 → 直接提示并跳转 wallet.html
-        tip.innerHTML = '<span class="ok">检测到已有凭证，且数据库存在记录，正在跳转…</span>';
-        location.href = `wallet.html?cred=${encodeURIComponent(foundHex)}`;
-        return;
-      }
-
-      // 1.2 有凭证但数据库无记录 → 询问是否沿用
-      const use = confirm(`检测到本域凭证：${foundHex.slice(0,16)}…\n数据库中未找到记录。\n是否沿用该凭证用于初始化？`);
-      if (use) {
-        setSelectedCredHex(foundHex);
-        if (tip) tip.innerHTML = `<span class="ok">已选择沿用凭证（id: ${foundHex.slice(0,16)}…）。可进行下一步。</span>`;
-        return;
-      }
-      // 选择不沿用 → 走注册新凭证
-    }
-
-    // 2) 注册新凭证
-    if (tip) tip.textContent = '请触摸安全钥匙以注册新凭证…';
-    const reg = await registerNewCredential();
-    const hex = reg?.id_hex;
-    if (!hex) throw new Error('注册失败，未获得凭证 ID');
-
-    setSelectedCredHex(hex);
-    if (tip) tip.innerHTML = `<span class="ok">已注册新凭证（id: ${hex.slice(0,16)}…）。可进行下一步。</span>`;
-  } catch (e) {
+    const { id_hex } = await registerNewCredential(); // 仅注册，不复用
+    selectedCredHex = id_hex;
+    tip.innerHTML = `<span class="ok">已注册新凭证：${id_hex.slice(0,16)}…</span>`;
+    $('btn-gen').disabled = false;
+  }catch(e){
+    tip.innerHTML = `<span class="err">注册失败：${e?.message||e}</span>`;
     console.error(e);
-    if (tip) tip.innerHTML = `<span class="err">处理失败：${e?.message || e}</span>`;
   }
 };
 
-/* =========（可选）在步骤 B/C 前强绑定同一把凭证的示例 =========
-   - 生成/解密/写库前，你可以用 deriveKEKWithSalt(selectedCredHex, someSalt)
-     来“再认证”，确保用户仍在使用步骤 A 绑定的同一把钥匙。
-   - 这里不直接改你 B/C 的逻辑；只暴露 window.__selectedCredHex 供复用。
-============================================================== */
-</script>
+/* ===== B：生成（立刻加密） ===== */
+$('btn-gen').onclick = async ()=>{
+  const tip=$('gen-tip');
+  if(!selectedCredHex){
+    tip.innerHTML = '<span class="err">请先完成步骤 A（注册新凭证）。</span>';
+    return;
+  }
+  try{
+    // 1) 生成助记词 & 各链分支（在内存临时变量里）
+    const mnemonic = genMnemonic(128);
+    const words    = mnemonic.trim().split(/\s+/);
+    const seed     = mnemonicToSeed(mnemonic, '');
+    const branches = exportBranches(seed);
 
+    // 2) 立刻加密：用“步骤 A 的同一把凭证 + 随机 salt”
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    const { kek, rp_id, info } = await deriveKEKWithSalt(selectedCredHex, salt);
+
+    // 助记词密文
+    const mnemonicEnc = await aesGcmEncryptStr(kek, mnemonic);
+    // 各链私钥密文；公钥/xpub 不必加密就不传，或按需加密
+    const enc = async s => s ? await aesGcmEncryptStr(kek, s) : null;
+
+    sealed = {
+      credId: selectedCredHex,
+      rp_id, info,
+      saltHex: [...salt].map(b=>b.toString(16).padStart(2,'0')).join(''),
+      mnemonicEnc,
+      chains:{
+        ETH:  { path: branches.ETH.path,  PubEnc:null,                    PrivEnc: await enc(branches.ETH.xprv)   },
+        BTC:  { path: branches.BTC.path,  PubEnc:null,                    PrivEnc: await enc(branches.BTC.xprv_z) },
+        EOS:  { path: branches.EOS.path,  PubEnc:null,                    PrivEnc: await enc(branches.EOS.xprv)   },
+        TRON: { path: branches.TRON.path, PubEnc:null,                    PrivEnc: await enc(branches.TRON.xprv)  }
+      }
+    };
+
+    // 3) 展示卡片（默认整块遮挡）
+    $('mnemo-card').style.display = 'block';
+    renderMaskedGrid(words.length);
+    maskAll('默认遮挡。点击“显示助记词”并完成 FIDO2 验证后，明文显示 60 秒。');
+
+    // 清理明文中间变量
+    try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
+    tip.innerHTML = '<span class="ok">已生成并加密。</span>';
+    $('btn-save').disabled = false;
+  }catch(e){
+    tip.innerHTML = `<span class="err">生成失败：${e?.message||e}</span>`;
+    console.error(e);
+  }
+};
+
+/* 显示助记词（始终需 FIDO2 解密） */
+$('btn-reveal').onclick = async ()=>{
+  clearTimer();
+  try{
+    if(!sealed?.credId){ throw new Error('尚未生成'); }
+    const salt = new Uint8Array(sealed.saltHex.match(/../g).map(h=>parseInt(h,16)));
+    // 派生（同一把凭证 + 保存的 salt）
+    const { kek } = await deriveKEKWithSalt(sealed.credId, salt);
+    const mnemonic = await aesGcmDecryptStr(kek, sealed.mnemonicEnc);
+    const words    = mnemonic.trim().split(/\s+/);
+
+    renderWords(words);
+    unmask();
+
+    // 60 秒后自动遮挡并擦干净
+    revealTimer = setTimeout(()=>{
+      renderMaskedGrid(words.length);
+      maskAll('已自动遮挡。如需再次查看，请重新触摸 FIDO2。');
+      try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
+    }, REVEAL_MS);
+  }catch(e){
+    $('mask-hint').textContent = `解密失败：${e?.message||e}`;
+    console.error(e);
+  }
+};
+
+/* ===== C：写库（再次验证同一把凭证） ===== */
+$('btn-save').onclick = async ()=>{
+  const tip=$('save-tip');
+  try{
+    if(!sealed?.credId){ throw new Error('请先完成步骤 B'); }
+
+    // 再做一次“同一把凭证 + 已保存 salt”的派生，相当于强制持有验证
+    const salt = new Uint8Array(sealed.saltHex.match(/../g).map(h=>parseInt(h,16)));
+    await deriveKEKWithSalt(sealed.credId, salt); // 仅验证可用，不再加密
+
+    const bundle = {
+      KEKInfo:{
+        rp_id: sealed.rp_id,
+        info: sealed.info,
+        salt: sealed.saltHex,
+        credential_id: sealed.credId
+      },
+      chains:{
+        ETH:  { path: sealed.chains.ETH.path,  PubEnc: null,                PrivEnc: sealed.chains.ETH.PrivEnc  },
+        BTC:  { path: sealed.chains.BTC.path,  PubEnc: null,                PrivEnc: sealed.chains.BTC.PrivEnc  },
+        EOS:  { path: sealed.chains.EOS.path,  PubEnc: null,                PrivEnc: sealed.chains.EOS.PrivEnc  },
+        TRON: { path: sealed.chains.TRON.path, PubEnc: null,                PrivEnc: sealed.chains.TRON.PrivEnc }
+      }
+    };
+
+    tip.textContent = '正在写入数据库…';
+    const resp = await fetch(`${API_BASE}/bundles`, {
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ user_id:'web-ui', note:'init via UI', bundle })
+    });
+    const data = await resp.json().catch(()=> ({}));
+    if(!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+
+    tip.innerHTML = `<span class="ok">写入成功，bundle_id=${data.bundle_id}</span>`;
+  }catch(e){
+    tip.innerHTML = `<span class="err">写入失败：${e?.message||e}</span>`;
+    console.error(e);
+  }
+};
+</script>
 </body>
 </html>
