@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>助记词离线备份解密（PBKDF2 + AES-GCM）</title>
+<style>
+  :root{
+    --bg:#0b1220;--card:#0f1724;--text:#e5e7eb;--muted:#9aa4b4;
+    --accent:#60a5fa;--ok:#10b981;--bad:#ef4444;--line:#1f2937;
+  }
+  html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif;}
+  .wrap{max-width:980px;margin:28px auto;padding:0 18px}
+  h1{margin:0 0 14px}
+  .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px;margin-bottom:18px;box-shadow:0 10px 26px rgba(0,0,0,.35)}
+  .row{display:flex;gap:12px;align-items:center;margin:10px 0;flex-wrap:wrap}
+  .muted{color:var(--muted)}
+  .ok{color:var(--ok)} .err{color:var(--bad)}
+  input[type="password"], textarea{
+    background:#0b1528;border:1px solid #22314f;border-radius:10px;padding:10px 12px;color:var(--text);
+  }
+  input[type="password"]{min-width:240px}
+  textarea{width:100%;min-height:150px;resize:vertical}
+  button{
+    background:linear-gradient(180deg,#0f172a,#0b1427);border:1px solid rgba(255,255,255,.06);
+    color:var(--text);padding:10px 14px;border-radius:10px;cursor:pointer
+  }
+  button:hover{filter:brightness(1.06)}
+  button[disabled]{opacity:.45;cursor:not-allowed}
+
+  /* 助记词展示区 */
+  .mnemo-card{position:relative;margin-top:12px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+  .cell{
+    background:linear-gradient(180deg,#071226,#0b1526);
+    border:1px dashed rgba(255,255,255,.08);border-radius:12px;padding:10px;
+    display:flex;align-items:center;gap:10px;min-height:44px
+  }
+  .badge{width:26px;height:26px;border-radius:999px;background:#0b1328;display:grid;place-items:center;color:#9fb4d9}
+  .mask{
+    position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(ellipse at center, rgba(15,23,42,.78) 0%, rgba(2,6,23,.90) 100%);
+    border:1px dashed #334155;border-radius:12px;backdrop-filter:blur(6px)
+  }
+  .mask-inner{display:flex;flex-direction:column;align-items:center;gap:10px}
+  .hint{text-align:center;color:var(--muted)}
+  .btn-primary{border:1px solid #204173;background:#0b1f37}
+  .btn-danger{border:1px solid #51202a;background:#2b0f16}
+  @media (max-width:720px){ .grid{grid-template-columns:repeat(2,1fr)} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>助记词离线备份解密（PBKDF2 + AES-GCM）</h1>
+
+  <div class="card">
+    <h3>① 选择或粘贴备份 JSON</h3>
+    <div class="row">
+      <input id="file" type="file" accept=".json,application/json" />
+      <button id="btn-load">从文件读取到下方文本框</button>
+      <span class="muted">或直接把内容粘贴到下面的文本框</span>
+    </div>
+    <textarea id="json" placeholder='粘贴下载的 JSON 内容到此…'></textarea>
+    <div id="load-tip" class="muted"></div>
+  </div>
+
+  <div class="card">
+    <h3>② 输入密码并解密</h3>
+    <div class="row">
+      <input id="pw" type="password" placeholder="备份时设置的密码" />
+      <button id="btn-dec" class="btn-primary">解密</button>
+      <button id="btn-clear" class="btn-danger">清除内存</button>
+      <span id="dec-tip" class="muted"></span>
+    </div>
+
+    <div class="mnemo-card" id="mnemo-card" style="display:none">
+      <div class="grid" id="mnemo-grid"></div>
+      <div class="mask" id="mask">
+        <div class="mask-inner">
+          <button id="btn-reveal" class="btn-primary">显示助记词（60 秒）</button>
+          <div class="hint">为防偷窥与录屏，默认遮挡；显示 60 秒后会自动再次遮挡。</div>
+        </div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btn-copy" disabled>复制助记词</button>
+        <span id="copy-tip" class="muted"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="muted">说明：本页面完全在本地浏览器内运行，不上传任何数据；支持你下载文件的默认格式（PBKDF2+AES-GCM）。</div>
+</div>
+
+<script>
+/* ===== 小工具：hex/bytes ===== */
+const te = new TextEncoder(), td = new TextDecoder();
+const hexToU8 = (hex) => {
+  const s = String(hex).trim().replace(/^0x/i,''); if (s.length%2) throw new Error('hex length');
+  const out = new Uint8Array(s.length/2); for (let i=0;i<out.length;i++) out[i]=parseInt(s.slice(i*2,i*2+2),16); return out;
+};
+const u8ToHex = (u8) => [...u8].map(b=>b.toString(16).padStart(2,'0')).join('');
+const wipeU8 = (u8)=>{ if (u8 && u8.fill) u8.fill(0); };
+
+/* ===== DOM ===== */
+const $ = (id)=>document.getElementById(id);
+const fileEl = $('file'), btnLoad = $('btn-load'), jsonEl = $('json'), loadTip = $('load-tip');
+const pwEl = $('pw'), btnDec = $('btn-dec'), btnClear = $('btn-clear'), decTip = $('dec-tip');
+const card = $('mnemo-card'), grid = $('mnemo-grid'), mask = $('mask'), btnReveal = $('btn-reveal');
+const btnCopy = $('btn-copy'), copyTip = $('copy-tip');
+
+let parsed = null;          // 解析后的 JSON
+let mnemonic = '';          // 明文助记词（只在显示窗口中保留）
+let autoTimer = null;       // 自动遮挡计时器
+
+function renderMasked(n=12){
+  grid.innerHTML='';
+  for(let i=1;i<=n;i++){
+    const d=document.createElement('div'); d.className='cell';
+    d.innerHTML=`<span class="badge">${i}</span><span>•••••</span>`;
+    grid.appendChild(d);
+  }
+}
+function renderWords(words){
+  grid.innerHTML='';
+  words.forEach((w,i)=>{
+    const d=document.createElement('div'); d.className='cell';
+    d.innerHTML=`<span class="badge">${i+1}</span><span>${w}</span>`;
+    grid.appendChild(d);
+  });
+}
+function showMask(){ mask.style.display='flex'; btnCopy.disabled=true; }
+function hideMask(){ mask.style.display='none'; btnCopy.disabled=false; }
+function clearAuto(){ if(autoTimer){ clearTimeout(autoTimer); autoTimer=null; } }
+function autoRemask(ms=60000){
+  clearAuto();
+  autoTimer = setTimeout(()=>{
+    mnemonic = ''; // 清除明文
+    renderMasked(12);
+    showMask();
+    copyTip.textContent='';
+  }, ms);
+}
+
+/* ===== 读文件到文本框 ===== */
+btnLoad.onclick = async ()=>{
+  loadTip.textContent='';
+  const f = fileEl.files?.[0];
+  if (!f){ loadTip.textContent='请选择 JSON 文件'; return; }
+  try{
+    const text = await f.text();
+    jsonEl.value = text;
+    loadTip.innerHTML = '<span class="ok">已载入到文本框。</span>';
+  }catch(e){
+    loadTip.innerHTML = '<span class="err">读取失败：'+(e?.message||e)+'</span>';
+  }
+};
+
+/* ===== 解密主流程 ===== */
+btnDec.onclick = async ()=>{
+  decTip.textContent=''; copyTip.textContent='';
+  try{
+    if (!jsonEl.value.trim()) { decTip.textContent='请粘贴 JSON 或选择文件'; return; }
+    const obj = JSON.parse(jsonEl.value);
+    // 校验结构
+    if (obj?.kdf?.name!=='PBKDF2' || !obj?.kdf?.salt || !obj?.kdf?.iterations || obj?.cipher?.name!=='AES-GCM' || !obj?.cipher?.iv || !obj?.ciphertext) {
+      throw new Error('不支持的备份格式或缺少字段');
+    }
+    parsed = obj;
+
+    const pwd = pwEl.value || '';
+    if (!pwd) { decTip.textContent='请输入密码'; return; }
+
+    // 1) PBKDF2 导入 password -> deriveKey
+    const keyMat = await crypto.subtle.importKey('raw', te.encode(pwd), 'PBKDF2', false, ['deriveKey']);
+    const aesKey = await crypto.subtle.deriveKey(
+      {
+        name:'PBKDF2',
+        hash: (obj.kdf.hash || 'SHA-256'),
+        iterations: Number(obj.kdf.iterations),
+        salt: hexToU8(obj.kdf.salt)
+      },
+      keyMat,
+      { name:'AES-GCM', length:256 },
+      false,
+      ['decrypt']
+    );
+
+    // 2) AES-GCM 解密
+    const pt = await crypto.subtle.decrypt(
+      { name:'AES-GCM', iv: hexToU8(obj.cipher.iv) },
+      aesKey,
+      hexToU8(obj.ciphertext)
+    );
+    // 3) 显示（默认遮挡）
+    mnemonic = new TextDecoder().decode(pt);
+    const words = mnemonic.trim().split(/\s+/);
+    renderMasked(words.length || 12);
+    card.style.display='block';
+    showMask();
+    decTip.innerHTML = '<span class="ok">解密成功。点击“显示助记词（60 秒）”。</span>';
+
+    // 擦局部
+    wipeU8(new Uint8Array(pt));
+  }catch(e){
+    decTip.innerHTML = '<span class="err">解密失败：'+(e?.message||e)+'</span>';
+    console.error(e);
+  }
+};
+
+/* ===== 显示 60 秒 ===== */
+btnReveal.onclick = ()=>{
+  if (!mnemonic){ decTip.textContent='请先完成解密'; return; }
+  const words = mnemonic.trim().split(/\s+/);
+  renderWords(words);
+  hideMask();
+  autoRemask(60_000);
+};
+
+/* ===== 复制 ===== */
+btnCopy.onclick = async ()=>{
+  try{
+    if (!mnemonic){ copyTip.textContent='没有可复制内容'; return; }
+    await navigator.clipboard.writeText(mnemonic);
+    copyTip.innerHTML = '<span class="ok">已复制到剪贴板。</span>';
+    setTimeout(()=>copyTip.textContent='', 1500);
+  }catch(e){
+    copyTip.innerHTML = '<span class="err">复制失败</span>';
+  }
+};
+
+/* ===== 清除内存 ===== */
+btnClear.onclick = ()=>{
+  mnemonic = '';
+  jsonEl.value = '';
+  pwEl.value = '';
+  renderMasked(12);
+  showMask();
+  copyTip.textContent='';
+  decTip.textContent='';
+  card.style.display='none';
+  clearAuto();
+};
+</script>
+</body>
+</html>
