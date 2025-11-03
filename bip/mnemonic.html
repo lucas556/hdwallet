@@ -3,189 +3,337 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>BIP-39 助记词与 Seed 生成（english.txt 单次校验）</title>
+<title>ETH (m/44'/60'/0'/0) xprv/xpub 推导演示（纯前端）</title>
 <style>
-  :root{--bg:#0b1220;--card:#0f172a;--text:#e5e7eb;--muted:#9ca3af;--line:#1f2937}
-  html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
-  .wrap{max-width:900px;margin:28px auto;padding:18px}
+  :root{--bg:#0b1220;--card:#0f1724;--line:#1f2937;--text:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;--good:#10b981;--bad:#ef4444}
+  html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
+  .wrap{max-width:980px;margin:32px auto;padding:0 16px}
   h1{margin:0 0 12px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 14px;margin:12px 0;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:10px 0}
-  label{color:var(--muted)}
-  input,select,textarea{
-    background:#0c1427;border:1px solid #223150;color:var(--text);
-    border-radius:10px;padding:10px;outline:none
+  .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 10px 28px rgba(0,0,0,.35)}
+  .row{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;align-items:center}
+  .muted{color:var(--muted)}
+  label{user-select:none}
+  input,select,button,textarea{
+    background:#0c152a;border:1px solid #243250;color:var(--text);
+    border-radius:10px;padding:10px 12px
   }
-  select{min-width:160px}
-  input[type="text"]{min-width:300px}
-  textarea{width:100%;min-height:96px;resize:vertical}
-  button{
-    background:linear-gradient(180deg,#0f172a,#0a1326);border:1px solid #223150;color:var(--text);
-    padding:10px 14px;border-radius:12px;cursor:pointer
-  }
-  button:hover{filter:brightness(1.06)}
-  .muted{color:var(--muted)} .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  .kv{display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center}
-  .hint{font-size:13px;color:var(--muted)}
-  .copy{margin-left:8px}
-  .err{color:#ef4444} .ok{color:#10b981}
+  button{cursor:pointer}
+  button:hover{filter:brightness(1.08)}
+  pre{background:#0a1224;border:1px solid #1d2a44;border-radius:10px;padding:12px;overflow:auto}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  .ok{color:var(--good)} .err{color:var(--bad)}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:760px){.grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>BIP-39 助记词与 Seed 生成（english.txt 单次校验）</h1>
+  <h1>ETH (m/44'/60'/0'/0) xprv/xpub 推导（BIP39 → BIP32，纯 WebCrypto）</h1>
+  <div class="muted">步骤清晰展示：助记词 → Seed → BIP32 Root (m) → m/44'/60'/0'/0 的 xprv/xpub。</div>
 
   <div class="card">
-    <div class="row kv">
-      <label for="sel-strength">助记词长度</label>
-      <select id="sel-strength">
-        <option value="128">12 词（128-bit）</option>
-        <option value="160">15 词（160-bit）</option>
-        <option value="192">18 词（192-bit）</option>
-        <option value="224">21 词（224-bit）</option>
-        <option value="256">24 词（256-bit）</option>
-      </select>
-
-      <label for="pp">BIP-39 passphrase</label>
-      <input id="pp" type="text" placeholder="可选：更安全，但需牢记" />
-
-      <span></span>
-      <div class="hint">seed = PBKDF2-HMAC-SHA512( 口令=助记词，salt='mnemonic'+passphrase，迭代=2048 )</div>
-    </div>
-
+    <h3>1) 词表加载</h3>
     <div class="row">
-      <button id="btn-gen">生成助记词 & Seed</button>
-      <span id="tip" class="muted"></span>
+      <button id="btn-load">加载 english.txt 并校验 SHA-256</button>
+      <span id="wl-tip" class="muted"></span>
     </div>
-
-    <div id="wl-tip" class="hint"></div>
+    <div class="small muted">校验值固定为：<span class="mono">2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda</span></div>
   </div>
 
   <div class="card">
+    <h3>2) 生成助记词</h3>
     <div class="row">
-      <label style="min-width:140px">助记词</label>
-      <button class="copy" id="copy-mn">复制</button>
+      <label>词数：
+        <select id="sl-words">
+          <option value="128">12 词（128-bit ENT）</option>
+          <option value="256">24 词（256-bit ENT）</option>
+        </select>
+      </label>
+      <label>可选 passphrase：
+        <input id="in-pass" placeholder="推荐留空（BIP39 passphrase）"/>
+      </label>
+      <button id="btn-gen" disabled>生成助记词并推导 Seed</button>
+      <span id="mn-tip" class="muted"></span>
     </div>
-    <textarea id="mnemo" class="mono" readonly></textarea>
+    <div id="mnemo-box" style="display:none">
+      <div class="row"><b>助记词：</b></div>
+      <pre id="out-mnemonic" class="mono"></pre>
+      <div class="row"><b>Seed (64 字节十六进制)：</b></div>
+      <pre id="out-seed" class="mono"></pre>
+    </div>
   </div>
 
   <div class="card">
-    <div class="row">
-      <label style="min-width:140px">BIP-39 Seed (hex, 64 字节)</label>
-      <button class="copy" id="copy-seed">复制</button>
+    <h3>3) BIP32 Root (m)</h3>
+    <div id="root-box" style="display:none">
+      <div class="grid">
+        <div>
+          <div class="row"><b>Root xprv (m)：</b></div>
+          <pre id="out-root-xprv" class="mono"></pre>
+        </div>
+        <div>
+          <div class="row"><b>Root xpub (m)：</b></div>
+          <pre id="out-root-xpub" class="mono"></pre>
+        </div>
+      </div>
     </div>
-    <textarea id="seedhex" class="mono" readonly></textarea>
   </div>
 
-  <div class="hint">请把 <span class="mono">english.txt</span>（官方 2048 词表）放在本页面同目录下。</div>
+  <div class="card">
+    <h3>4) 派生到 m/44'/60'/0'/0</h3>
+    <div class="row">
+      <button id="btn-derive" disabled>推导 m/44'/60'/0'/0 的 xprv/xpub</button>
+      <span id="drv-tip" class="muted"></span>
+    </div>
+    <div id="path-box" style="display:none">
+      <div class="row"><b>路径：</b> <span class="mono">m/44'/60'/0'/0</span></div>
+      <div class="grid">
+        <div>
+          <div class="row"><b>Account xprv：</b></div>
+          <pre id="out-path-xprv" class="mono"></pre>
+        </div>
+        <div>
+          <div class="row"><b>Account xpub：</b></div>
+          <pre id="out-path-xpub" class="mono"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <script type="module">
-/* ========== 工具 ========== */
-const te = new TextEncoder(), td = new TextDecoder();
-const EXPECTED_WL_SHA256 = '2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda';
+/* ===== 依赖（ESM CDN） ===== */
+import * as secp from 'https://cdn.jsdelivr.net/npm/@noble/secp256k1@2.1.0/+esm';
+import { sha256 }   from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/sha256.js';
+import { ripemd160 }from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/ripemd160.js';
+import { bytesToHex, hexToBytes } from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/utils.js';
 
-let WORDLIST = null;   // 缓存加载后的词表（只校验一次）
-let WL_READY = false;  // 是否已通过校验
+/* ===== 小工具 ===== */
+const te = new TextEncoder();
+const td = new TextDecoder();
+const expectWordlistHash = '2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda';
+const curveN = secp.CURVE.n;
 
-function hex(u8){ return Array.from(u8).map(b=>b.toString(16).padStart(2,'0')).join(''); }
-async function sha256(buf){ return new Uint8Array(await crypto.subtle.digest('SHA-256', buf)); }
-async function sha256HexOfString(s){ return hex(await sha256(te.encode(s))); }
-function bytesToBin(u8){ return Array.from(u8).map(b=>b.toString(2).padStart(8,'0')).join(''); }
-function normalizeWordlistText(raw){ let t=raw.replace(/\r\n/g,'\n'); t=t.replace(/\n+$/,''); return t+'\n'; }
-
-/* 单次加载 + 校验（后续生成直接复用） */
-async function ensureWordlist() {
-  if (WL_READY && Array.isArray(WORDLIST)) return WORDLIST;
-
-  const tip = document.getElementById('wl-tip');
-  tip.textContent = '加载 english.txt 中…';
-
-  const resp = await fetch('./english.txt', { cache: 'no-cache' });
-  if (!resp.ok) { tip.innerHTML = '<span class="err">无法加载 english.txt</span>'; throw new Error('fetch english.txt failed'); }
-
-  const raw = await resp.text();
-  const [rawHash, normHash] = await Promise.all([
-    sha256HexOfString(raw),
-    sha256HexOfString(normalizeWordlistText(raw)),
-  ]);
-
-  if (rawHash !== EXPECTED_WL_SHA256 && normHash !== EXPECTED_WL_SHA256) {
-    tip.innerHTML = `<span class="err">english.txt 校验失败！</span><br/>期望：<code>${EXPECTED_WL_SHA256}</code><br/>实际(raw)：<code>${rawHash}</code><br/>实际(norm)：<code>${normHash}</code>`;
-    throw new Error('english.txt sha256 mismatch');
-  }
-
-  const textOK = (normHash === EXPECTED_WL_SHA256) ? normalizeWordlistText(raw) : raw;
-  WORDLIST = textOK.trim().split(/\n/);  // 不再做“2048 行”限制
-  WL_READY = true;
-  tip.innerHTML = `<span class="ok">english.txt 校验通过（仅首次校验）</span>`;
-  return WORDLIST;
+const $ = id => document.getElementById(id);
+const toHex = (u8) => bytesToHex(u8);
+function concatBytes(...arrs){
+  let len = 0; for(const a of arrs) len += a.length;
+  const out = new Uint8Array(len);
+  let off=0; for(const a of arrs){ out.set(a, off); off += a.length; }
+  return out;
+}
+function ser32(i){ const b = new Uint8Array(4); b[0]=(i>>>24)&255;b[1]=(i>>>16)&255;b[2]=(i>>>8)&255;b[3]=i&255; return b; }
+function ser256(i){ // BN -> 32-byte big-endian
+  let hex = i.toString(16).padStart(64, '0');
+  return hexToBytes(hex);
+}
+function serP(P){ // 压缩公钥
+  return secp.Point.fromHex(P).toRawBytes(true);
+}
+function hash160(data){ return ripemd160(sha256(data)); }
+function base58encode(data){ // data: Uint8Array
+  const ALPH='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let x = BigInt('0x'+bytesToHex(data));
+  let out = '';
+  while (x > 0n){ const mod = x % 58n; out = ALPH[Number(mod)] + out; x = x / 58n; }
+  // 前导 0 -> '1'
+  for (let i=0;i<data.length && data[i]===0;i++) out = '1' + out;
+  return out || '1';
+}
+function base58check(payload){ // payload: Uint8Array
+  const checksum = sha256(sha256(payload)).slice(0,4);
+  return base58encode(concatBytes(payload, checksum));
 }
 
-/* 生成助记词 */
-async function generateMnemonic(entBits = 128) {
-  if (![128,160,192,224,256].includes(entBits)) throw new Error('strength 仅支持 128/160/192/224/256');
-  const wordlist = await ensureWordlist();
+/* ===== WebCrypto：PBKDF2 / HMAC-SHA512 ===== */
+async function hmacSHA512(keyBytes, dataBytes){
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name:'HMAC', hash:'SHA-512' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, dataBytes);
+  return new Uint8Array(sig);
+}
+async function pbkdf2_sha512(passwordBytes, saltBytes, iterations, dkLen){
+  const key = await crypto.subtle.importKey('raw', passwordBytes, 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name:'PBKDF2', hash:'SHA-512', salt: saltBytes, iterations }, key, dkLen*8);
+  return new Uint8Array(bits);
+}
 
-  const entropy = new Uint8Array(entBits/8);
-  crypto.getRandomValues(entropy);
-
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', entropy));
-  const csLen = entBits / 32;
-  const bits = bytesToBin(entropy) + bytesToBin(hash).slice(0, csLen);
-
-  const chunks = bits.match(/.{1,11}/g) ?? [];
-  const words = chunks.map(b => wordlist[parseInt(b,2)]);
-
-  entropy.fill(0);
+/* ===== BIP39 助记词 ===== */
+let WORDS = null;
+async function loadWordlistOnce(){
+  if (WORDS) return WORDS;
+  const res = await fetch('./english.txt');
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const gotHash = bytesToHex(sha256(buf));
+  if (gotHash !== expectWordlistHash) {
+    throw new Error('english.txt 校验失败：SHA-256 不匹配');
+  }
+  const text = td.decode(buf).replace(/\r/g,'').trim();
+  WORDS = text.split('\n'); // 不再强制检查 2048 行
+  return WORDS;
+}
+function bitsToIndices(bits, group=11){
+  const out = [];
+  for (let i=0;i<bits.length;i+=group){
+    let v=0;
+    for (let j=0;j<group;j++) v = (v<<1) | (bits[i+j]||0);
+    out.push(v);
+  }
+  return out;
+}
+function bytesToBits(u8){
+  const bits = [];
+  for (const b of u8) for (let i=7;i>=0;i--) bits.push((b>>i)&1);
+  return bits;
+}
+async function genMnemonic(entBits = 128){
+  if(!WORDS) await loadWordlistOnce();
+  const ENT = entBits;               // 128 or 256
+  const CS  = ENT / 32;              // checksum length
+  const ent = new Uint8Array(ENT/8); crypto.getRandomValues(ent);
+  const hash = sha256(ent);
+  const entBitsArr  = bytesToBits(ent);
+  const csBitsArr   = bytesToBits(hash).slice(0, CS);
+  const allBits     = entBitsArr.concat(csBitsArr);
+  const idx = bitsToIndices(allBits, 11);
+  const words = idx.map(i => WORDS[i]);
   return words.join(' ');
 }
-
-/* 助记词 -> Seed */
-async function mnemonicToSeed(mnemonic, passphrase=''){
-  const mn = mnemonic.normalize('NFKD');
-  const salt = ('mnemonic'+passphrase).normalize('NFKD');
-
-  const baseKey = await crypto.subtle.importKey('raw', te.encode(mn), { name:'PBKDF2' }, false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits(
-    { name:'PBKDF2', hash:'SHA-512', salt: te.encode(salt), iterations: 2048 },
-    baseKey, 512
-  );
-  const u8 = new Uint8Array(bits);
-  return { seed: u8, seedHex: hex(u8) };
+async function mnemonicToSeed(mnemonic, passphrase){
+  const salt = te.encode('mnemonic' + (passphrase || '')).buffer; // NFKD：浏览器 te 默认 UTF-8；若需要严格 NFKD，可手动 normalize
+  const pwd  = te.encode(mnemonic).buffer;
+  const dk   = await pbkdf2_sha512(new Uint8Array(pwd), new Uint8Array(salt), 2048, 64);
+  return dk; // 64 bytes
 }
 
-/* UI 绑定 */
-const $ = id => document.getElementById(id);
+/* ===== BIP32：Root & CKDpriv ===== */
+async function bip32RootFromSeed(seed){ // seed: Uint8Array(64)
+  const I = await hmacSHA512(te.encode('Bitcoin seed'), seed);
+  const IL = I.slice(0,32), IR = I.slice(32);
+  let k = BigInt('0x'+bytesToHex(IL));
+  if (k === 0n || k >= curveN) throw new Error('Invalid master key');
+  const chain = IR;
+  const key32 = IL;
+  const pub  = secp.getPublicKey(key32, true); // compressed
+  const depth=0, child=0, parentFP = new Uint8Array([0,0,0,0]);
+  const xprv = serializeXPRV(key32, chain, depth, parentFP, child);
+  const xpub = serializeXPUB(pub,  chain, depth, parentFP, child);
+  return { key: key32, chain, pub, depth, child, parentFP, xprv, xpub };
+}
+async function CKDpriv({key, chain, depth, child, pub}, index, hardened){
+  const idx = hardened ? (index | 0x80000000) : index;
+  let data;
+  if (hardened){
+    data = concatBytes(new Uint8Array([0]), key, ser32(idx));
+  }else{
+    const P = secp.getPublicKey(key, true);
+    data = concatBytes(P, ser32(idx));
+  }
+  const I = await hmacSHA512(chain, data);
+  const IL = I.slice(0,32), IR = I.slice(32);
+  let ki = (BigInt('0x'+bytesToHex(IL)) + BigInt('0x'+bytesToHex(key))) % curveN;
+  if (ki === 0n) throw new Error('Invalid child key');
+  const keyChild = ser256(ki);
+  const chainChild = IR;
+  const depthChild = depth + 1;
+  const parentFP = hash160(pub)[0] ? hash160(pub).slice(0,4) : new Uint8Array([0,0,0,0]);
+  const pubChild = secp.getPublicKey(keyChild, true);
+  const xprv = serializeXPRV(keyChild, chainChild, depthChild, parentFP, idx);
+  const xpub = serializeXPUB(pubChild, chainChild, depthChild, parentFP, idx);
+  return { key: keyChild, chain: chainChild, pub: pubChild, depth: depthChild, child: idx, parentFP, xprv, xpub };
+}
 
-$('btn-gen').onclick = async ()=>{
-  const tip=$('tip');
-  tip.textContent='生成中…';
-  $('mnemo').value=''; $('seedhex').value='';
+/* ===== xprv/xpub 序列化（版本号） ===== */
+function serializeXPUB(pub, chain, depth, parentFP, child){
+  const ver = new Uint8Array([0x04,0x88,0xB2,0x1E]); // xpub
+  const payload = concatBytes(
+    ver,
+    new Uint8Array([depth&255]),
+    parentFP,
+    ser32(child),
+    chain,
+    pub
+  );
+  return base58check(payload);
+}
+function serializeXPRV(key, chain, depth, parentFP, child){
+  const ver = new Uint8Array([0x04,0x88,0xAD,0xE4]); // xprv
+  const payload = concatBytes(
+    ver,
+    new Uint8Array([depth&255]),
+    parentFP,
+    ser32(child),
+    chain,
+    new Uint8Array([0]), // leading 0
+    key
+  );
+  return base58check(payload);
+}
 
+/* ===== 绑定 UI 逻辑 ===== */
+let gSeed = null;
+let gRoot = null; // { key, chain, pub, xprv, xpub, ... }
+
+$('btn-load').onclick = async ()=>{
+  const tip = $('wl-tip');
   try{
-    const ent = parseInt($('sel-strength').value,10);
-    const pass = $('pp').value || '';
-    const mn = await generateMnemonic(ent);
-    const { seedHex } = await mnemonicToSeed(mn, pass);
-
-    $('mnemo').value = mn;
-    $('seedhex').value = seedHex;
-
-    // 正确的词数： (ENT + ENT/32) / 11
-    const wordsCount = (ent + ent/32) / 11;
-    tip.textContent = `已生成：${wordsCount} 词（${ent}-bit 熵）`;
+    await loadWordlistOnce();
+    tip.innerHTML = '<span class="ok">词表加载并通过校验。</span>';
+    $('btn-gen').disabled = false;
   }catch(e){
-    tip.innerHTML = `<span class="err">失败：${e?.message||e}</span>`;
+    tip.innerHTML = '<span class="err">失败：'+(e?.message||e)+'</span>';
     console.error(e);
   }
 };
 
-$('copy-mn').onclick = async ()=>{ try{ await navigator.clipboard.writeText($('mnemo').value); }catch{} };
-$('copy-seed').onclick = async ()=>{ try{ await navigator.clipboard.writeText($('seedhex').value); }catch{} };
+$('btn-gen').onclick = async ()=>{
+  const tip = $('mn-tip');
+  try{
+    const ent = parseInt(($('sl-words').value||'128'),10);
+    const pass = ($('in-pass').value||'').normalize('NFKD');
+    const mnemonic = await genMnemonic(ent);
+    const seed     = await mnemonicToSeed(mnemonic, pass);
 
-/* 页面加载时就预先校验并缓存词表（失败会在 UI 显示原因） */
-ensureWordlist().catch(console.error);
+    gSeed = seed;
+
+    $('out-mnemonic').textContent = mnemonic;
+    $('out-seed').textContent     = bytesToHex(seed);
+    $('mnemo-box').style.display  = 'block';
+
+    // Root m
+    gRoot = await bip32RootFromSeed(seed);
+    $('out-root-xprv').textContent = gRoot.xprv;
+    $('out-root-xpub').textContent = gRoot.xpub;
+    $('root-box').style.display    = 'block';
+
+    $('drv-tip').textContent = '';
+    $('btn-derive').disabled = false;
+  }catch(e){
+    tip.innerHTML = '<span class="err">失败：'+(e?.message||e)+'</span>';
+    console.error(e);
+  }
+};
+
+$('btn-derive').onclick = async ()=>{
+  const tip = $('drv-tip');
+  try{
+    if (!gRoot) throw new Error('请先生成 Seed / Root');
+    // m/44'/60'/0'/0
+    let node = gRoot;
+    node = await CKDpriv(node, 44, true);
+    node = await CKDpriv(node, 60, true);
+    node = await CKDpriv(node, 0,  true);
+    node = await CKDpriv(node, 0,  false);
+
+    $('out-path-xprv').textContent = node.xprv;
+    $('out-path-xpub').textContent = node.xpub;
+    $('path-box').style.display    = 'block';
+    tip.textContent = '完成。';
+  }catch(e){
+    tip.innerHTML = '<span class="err">失败：'+(e?.message||e)+'</span>';
+    console.error(e);
+  }
+};
 </script>
 </body>
 </html>
