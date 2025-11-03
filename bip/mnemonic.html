@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>BIP-39 助记词与 Seed 生成（纯 Web Crypto）</title>
+<style>
+  :root{--bg:#0b1220;--card:#0f172a;--text:#e5e7eb;--muted:#9ca3af;--line:#1f2937;--accent:#60a5fa}
+  html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
+  .wrap{max-width:900px;margin:28px auto;padding:18px}
+  h1{margin:0 0 12px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 14px;margin:12px 0;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:10px 0}
+  label{color:var(--muted)}
+  input,select,textarea{
+    background:#0c1427;border:1px solid #223150;color:var(--text);
+    border-radius:10px;padding:10px;outline:none
+  }
+  select{min-width:160px}
+  input[type="text"]{min-width:300px}
+  textarea{width:100%;min-height:96px;resize:vertical}
+  button{
+    background:linear-gradient(180deg,#0f172a,#0a1326);border:1px solid #223150;color:var(--text);
+    padding:10px 14px;border-radius:12px;cursor:pointer
+  }
+  button:hover{filter:brightness(1.06)}
+  .muted{color:var(--muted)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,"Liberation Mono",Consolas,monospace}
+  .kv{display:grid;grid-template-columns:140px 1fr;gap:10px;align-items:center}
+  .hint{font-size:13px;color:var(--muted)}
+  .copy{margin-left:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>BIP-39 助记词与 Seed 生成（纯 Web Crypto）</h1>
+
+  <div class="card">
+    <div class="row kv">
+      <label for="sel-strength">助记词长度</label>
+      <select id="sel-strength">
+        <option value="128">12 词（128-bit）</option>
+        <option value="160">15 词（160-bit）</option>
+        <option value="192">18 词（192-bit）</option>
+        <option value="224">21 词（224-bit）</option>
+        <option value="256">24 词（256-bit）</option>
+      </select>
+
+      <label for="pp">BIP-39 passphrase</label>
+      <input id="pp" type="text" placeholder="可选：更安全，但需牢记" />
+
+      <span></span>
+      <div class="hint">提示：seed = PBKDF2-HMAC-SHA512( 口令=助记词 ，salt='mnemonic'+passphrase ，迭代=2048 )</div>
+    </div>
+
+    <div class="row">
+      <button id="btn-gen">生成助记词 & Seed</button>
+      <span id="tip" class="muted"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label style="min-width:140px">助记词</label>
+      <button class="copy" id="copy-mn">复制</button>
+    </div>
+    <textarea id="mnemo" class="mono" readonly></textarea>
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <label style="min-width:140px">BIP-39 Seed (hex, 64 字节)</label>
+      <button class="copy" id="copy-seed">复制</button>
+    </div>
+    <textarea id="seedhex" class="mono" readonly></textarea>
+  </div>
+
+  <div class="hint">需要把 <span class="mono">english.txt</span>（2048 行官方词表）放在本页面同目录下。</div>
+</div>
+
+<script type="module">
+/* ========== 工具 ========== */
+const te = new TextEncoder();
+const td = new TextDecoder();
+
+async function loadWordlist() {
+  const resp = await fetch('./english.txt', {cache:'no-cache'});
+  if (!resp.ok) throw new Error('无法加载 english.txt（2048 行词表）');
+  const text = await resp.text();
+  const list = text.trim().split(/\r?\n/);
+  if (list.length !== 2048) throw new Error('词表不是 2048 个词');
+  return list;
+}
+async function sha256(buf) {
+  const h = await crypto.subtle.digest('SHA-256', buf);
+  return new Uint8Array(h);
+}
+function bytesToBin(u8) {
+  return Array.from(u8).map(b => b.toString(2).padStart(8, '0')).join('');
+}
+function hex(u8) {
+  return Array.from(u8).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+/* ========== 生成助记词（BIP-39） ========== */
+async function generateMnemonic(strengthBits = 128) {
+  if (![128,160,192,224,256].includes(strengthBits)) {
+    throw new Error('strengthBits 仅支持 128/160/192/224/256');
+  }
+  const wordlist = await loadWordlist();
+
+  // 1) 随机熵
+  const entropy = new Uint8Array(strengthBits / 8);
+  crypto.getRandomValues(entropy);
+
+  // 2) 校验位（SHA-256 前 checksumLength 位）
+  const hash = await sha256(entropy);
+  const checksumLength = strengthBits / 32;
+  const checksumBits = bytesToBin(hash).slice(0, checksumLength);
+
+  // 3) 拼接熵与校验位 → 每 11 位切片 → 词表索引
+  const bits = bytesToBin(entropy) + checksumBits;
+  const chunks = bits.match(/.{1,11}/g) ?? [];
+  const words = chunks.map(bin => wordlist[parseInt(bin, 2)]);
+
+  return words.join(' ');
+}
+
+/* ========== 助记词 → BIP-39 Seed（PBKDF2-HMAC-SHA512, 2048 次, 64 字节） ========== */
+async function mnemonicToSeed(mnemonic, passphrase = '') {
+  const mn = mnemonic.normalize('NFKD');
+  const salt = ('mnemonic' + passphrase).normalize('NFKD');
+
+  const baseKey = await crypto.subtle.importKey(
+    'raw',
+    te.encode(mn),
+    { name: 'PBKDF2' },
+    false,
+    ['deriveBits']
+  );
+
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      hash: 'SHA-512',
+      salt: te.encode(salt),
+      iterations: 2048
+    },
+    baseKey,
+    512
+  );
+
+  const seedU8 = new Uint8Array(bits);
+  return { seed: seedU8, seedHex: hex(seedU8) };
+}
+
+/* ========== 简单 UI 逻辑 ========== */
+const $ = id => document.getElementById(id);
+$('btn-gen').onclick = async () => {
+  const tip = $('tip');
+  tip.textContent = '生成中…';
+  $('mnemo').value = '';
+  $('seedhex').value = '';
+
+  try {
+    const strength = parseInt($('sel-strength').value, 10);
+    const pass = $('pp').value || '';
+
+    const mn = await generateMnemonic(strength);
+    const { seedHex } = await mnemonicToSeed(mn, pass);
+
+    $('mnemo').value = mn;
+    $('seedhex').value = seedHex;
+    tip.textContent = `已生成：${(strength/32)+((strength%32)?1:0)} 词（${strength}-bit 熵）`;
+  } catch (e) {
+    tip.textContent = '失败：' + (e?.message || e);
+    console.error(e);
+  }
+};
+
+$('copy-mn').onclick = async ()=>{
+  try { await navigator.clipboard.writeText($('mnemo').value); }
+  catch {}
+};
+$('copy-seed').onclick = async ()=>{
+  try { await navigator.clipboard.writeText($('seedhex').value); }
+  catch {}
+};
+</script>
+</body>
+</html>
