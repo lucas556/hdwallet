@@ -1,108 +1,140 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>助记词初始化（FIDO2 加密 + 整块遮挡 + 单击显示）</title>
-<style>
-  :root{--bg:#0b1220;--card:#0f1724;--muted:#9ca3af;--text:#e5e7eb;--accent:#60a5fa;--good:#10b981;--bad:#ef4444;--line:#1f2937}
-  html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
-  .wrap{max-width:980px;margin:32px auto;padding:18px}
-  h1{margin:0 0 12px}
-  .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px;margin-bottom:18px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-  .row{display:flex;align-items:center;gap:12px;margin:12px 0}
-  .muted{color:var(--muted)}
-  button{background:linear-gradient(180deg,#0f172a,#091427);border:1px solid rgba(255,255,255,.06);color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer}
-  button:hover{filter:brightness(1.06)} button[disabled]{opacity:.45;cursor:not-allowed}
-  .ok{color:var(--good)} .err{color:var(--bad)}
-  .small{font-size:13px;color:var(--muted)}
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>助记词初始化（注册新 FIDO2 凭证）</title>
+  <style>
+    :root{
+      --bg:#0b1220;--card:#0f1724;--muted:#9ca3af;--text:#e5e7eb;
+      --accent:#60a5fa;--good:#10b981;--bad:#ef4444;--line:#1f2937;
+    }
+    html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif;}
+    .wrap{max-width:980px;margin:32px auto;padding:18px}
+    h1{margin:0 0 12px}
+    .card{background:var(--card);border:1px solid rgba(255,255,255,0.06);border-radius:14px;padding:18px;margin-bottom:18px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+    .row{display:flex;align-items:center;gap:12px;margin:12px 0;flex-wrap:wrap}
+    .muted{color:var(--muted)}
+    .ok{color:var(--good)} .err{color:var(--bad)}
+    .btn{
+      background:linear-gradient(180deg,#0f172a,#091427);
+      border:1px solid rgba(255,255,255,0.08);
+      color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer
+    }
+    .btn:hover{filter:brightness(1.06)}
+    .btn[disabled]{opacity:.45;cursor:not-allowed}
 
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-  .cell{background:linear-gradient(180deg,#071226,#0b1526);border:1px dashed rgba(255,255,255,.06);border-radius:12px;padding:10px;display:flex;align-items:center;gap:10px;min-height:44px}
-  .badge{width:26px;height:26px;border-radius:999px;background:#0b1328;display:grid;place-items:center;color:#9fb4d9}
-  .mnemo-box{position:relative}
-  .mnemo-mask{position:absolute;inset:10px;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at center, rgba(15,23,42,.78) 0%, rgba(2,6,23,.9) 100%);border:1px dashed #334155;border-radius:14px;backdrop-filter:blur(6px)}
-  .mask-inner{display:flex;flex-direction:column;align-items:center;gap:10px}
-  .reveal-btn{display:flex;align-items:center;gap:10px;border-radius:999px;padding:12px 16px;border:1px solid #1f2a44;background:#0b1328;color:#cfe1ff;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.28);user-select:none}
-  .hint{text-align:center;color:#9aa4b4}
-  @media (max-width:700px){ .grid{grid-template-columns:repeat(2,1fr)} }
-</style>
+    /* 助记词网格 */
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+    .cell{
+      background:linear-gradient(180deg,#071226,#0b1526);
+      border:1px dashed rgba(255,255,255,.06);border-radius:12px;padding:10px;
+      display:flex;align-items:center;gap:10px;min-height:44px
+    }
+    .badge{width:26px;height:26px;border-radius:999px;background:#0b1328;display:grid;place-items:center;color:#9fb4d9}
+
+    /* 整块遮挡（覆盖在网格上） */
+    .mnemo-box{position:relative}
+    .mnemo-mask{
+      position:absolute;inset:10px;display:flex;align-items:center;justify-content:center;
+      background:radial-gradient(ellipse at center, rgba(15,23,42,.78) 0%, rgba(2,6,23,.9) 100%);
+      border:1px dashed #334155;border-radius:14px;backdrop-filter:blur(6px)
+    }
+    .mask-inner{display:flex;flex-direction:column;align-items:center;gap:10px}
+    .mask-btn{
+      display:flex;align-items:center;gap:10px;border-radius:999px;padding:12px 16px;
+      border:1px solid #1f2a44;background:#0b1328;color:#cfe1ff;cursor:pointer;
+      box-shadow:0 8px 22px rgba(0,0,0,.28);user-select:none
+    }
+    .hint{text-align:center;color:#9aa4b4}
+
+    @media (max-width:700px){ .grid{grid-template-columns:repeat(2,1fr)} }
+  </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>助记词初始化（FIDO2 加密 + 整块遮挡 + 单击显示 60s）</h1>
+  <div class="wrap">
+    <h1>助记词初始化（注册新 FIDO2 凭证 → 生成即加密）</h1>
 
-  <!-- A. FIDO2 凭证 -->
-  <div class="card">
-    <h3>步骤 A：注册/选择本域 FIDO2 凭证</h3>
-    <div class="row">
-      <button id="btn-register">1) 注册或选择凭证</button>
-      <span id="reg-tip" class="muted"></span>
-    </div>
-    <div class="small">后续步骤将强制使用同一把凭证（防止 A 步骤选 A，B 步骤却触摸了 B）。</div>
-  </div>
-
-  <!-- B. 生成 + 整块遮挡 + 单击解锁显示 -->
-  <div class="card">
-    <h3>步骤 B：生成助记词（生成即加密；默认整块遮挡）</h3>
-    <div class="row">
-      <button id="btn-gen" disabled>2) 生成助记词</button>
-      <span id="gen-tip" class="muted"></span>
+    <!-- A. 仅注册新凭证 -->
+    <div class="card">
+      <h3>步骤 A：注册新的本域 FIDO2 凭证</h3>
+      <div class="row">
+        <button id="btn-register" class="btn">1) 注册新凭证</button>
+        <span id="reg-tip" class="muted"></span>
+      </div>
+      <div class="muted">该步骤会创建“可发现凭证（discoverable）”。后续步骤会<strong>强制绑定同一把凭证</strong>，防止 A 步骤选 A、B 步骤却触摸 B。</div>
     </div>
 
-    <div id="mnemo-card" style="display:none;margin-top:10px">
-      <div class="mnemo-box" id="mnemo-box">
-        <div class="grid" id="mnemo-grid"></div>
-        <div class="mnemo-mask" id="mnemo-mask">
-          <div class="mask-inner">
-            <button class="reveal-btn" id="reveal-btn">点击显示助记词（60 秒）</button>
-            <div class="hint" id="mask-hint">已用 FIDO2 加密，页面仅保存密文。点击需要触摸同一把钥匙解密。</div>
+    <!-- B. 生成 & 展示（生成即加密；默认整块遮挡） -->
+    <div class="card">
+      <h3>步骤 B：生成助记词（生成即用步骤 A 的凭证加密；默认整块遮挡）</h3>
+      <div class="row">
+        <button id="btn-gen" class="btn" disabled>2) 生成助记词并加密</button>
+        <span id="gen-tip" class="muted"></span>
+      </div>
+
+      <!-- 助记词卡片：网格 + 整块遮挡 -->
+      <div id="mnemo-card" style="display:none;margin-top:10px">
+        <div class="mnemo-box">
+          <div class="grid" id="mnemo-grid"></div>
+
+          <!-- 蒙层：默认可见；点击解密显示 60 秒 -->
+          <div class="mnemo-mask" id="mnemo-mask">
+            <div class="mask-inner">
+              <button class="mask-btn" id="btn-reveal">显示助记词（需 FIDO2 解密）</button>
+              <div class="hint" id="mask-hint">默认遮挡。点击上方按钮并完成 FIDO2 验证后，明文显示 60 秒并自动遮挡。</div>
+            </div>
           </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <!-- C. 加密 xprv 并写库 -->
-  <div class="card">
-    <h3>步骤 C：加密 xprv 并写入数据库</h3>
-    <div class="row">
-      <button id="btn-encrypt" disabled>3) 写入数据库</button>
-      <span id="encrypt-tip" class="muted"></span>
+    <!-- C. 写库 -->
+    <div class="card">
+      <h3>步骤 C：写入数据库（再次验证同一把凭证）</h3>
+      <div class="row">
+        <button id="btn-save" class="btn" disabled>3) 写入数据库</button>
+        <span id="save-tip" class="muted"></span>
+      </div>
+      <div class="muted">仅写入密文，不包含助记词明文。</div>
     </div>
-    <div class="small">bundle 不包含助记词明文；各链 xprv 已在步骤 B 生成时加密。</div>
   </div>
-
-  <div class="small" id="final"></div>
-</div>
 
 <script type="module">
+/* ===== 依赖 ===== */
 import {
-  ensureCredentialWithChoice,
-  deriveKEKWithNewSaltForCred,
+  registerNewCredential,
   deriveKEKWithSalt,
   aesGcmEncryptStr,
-  aesGcmDecryptStr,
-  loadCredHex,
+  aesGcmDecryptStr
 } from './js/fido2.js';
 
 import { genMnemonic, mnemonicToSeed, exportBranches } from './js/hdwallet-core.js';
 
-/* 配置 */
+/* ===== 常量与状态 ===== */
 const API_BASE   = 'https://wallet.lucas-l-shang.workers.dev';
-const SHOW_MS    = 60_000;  // 每次显示 60 秒
+const REVEAL_MS  = 60_000;  // 展示 60 秒
 
-/* 状态 */
-let selectedCredHex = null;  // 步骤 A 选中的“唯一”凭证
-let sealed = null;           // 助记词密文 { saltHex, ivHex, ctHex, credId, rp_id, info }
-let encXprv = null;          // 各链 xprv 的密文 { chain: { nonce, ciphertext }, ... }
-let xpubs  = null;           // 各链 xpub（明文，用于写库）
-let paths  = null;           // 各链 path（写库用）
-let autoMaskTimer = null;
+let selectedCredHex = '';   // 步骤 A 注册得到的唯一凭证
+let sealed = null;          // 生成阶段产物（只存密文）
+/*
+sealed = {
+  credId, rp_id, info, saltHex,
+  mnemonicEnc:{nonce,ciphertext},
+  chains:{
+    ETH:{ path, PubEnc:null, PrivEnc:{nonce,ciphertext} },
+    BTC:{ ... }, EOS:{...}, TRON:{...}
+  }
+}
+*/
+let revealTimer = null;
 
-/* DOM */
+/* ===== DOM 工具 ===== */
 const $ = id => document.getElementById(id);
-function renderMaskedGrid(n=12){
+function clearTimer(){ if(revealTimer){ clearTimeout(revealTimer); revealTimer=null; } }
+function maskAll(note=''){ $('mnemo-mask').style.display='flex'; if(note) $('mask-hint').textContent=note; }
+function unmask(){ $('mnemo-mask').style.display='none'; }
+function renderMaskedGrid(n){
   const grid=$('mnemo-grid'); grid.innerHTML='';
   for(let i=0;i<n;i++){
     const d=document.createElement('div'); d.className='cell';
@@ -110,209 +142,142 @@ function renderMaskedGrid(n=12){
     grid.appendChild(d);
   }
 }
-function showMask(){ $('mnemo-mask').style.display='flex'; }
-function hideMask(){ $('mnemo-mask').style.display='none'; }
-function resetAutoMask(){ if(autoMaskTimer){ clearTimeout(autoMaskTimer); autoMaskTimer=null; } }
-
-async function queryBundlesByCred(credHex) {
-  const resp = await fetch(`${API_BASE}/bundles/by-cred/${credHex}`, { method: 'GET' });
-  const data = await resp.json().catch(()=> ({}));
-  if (!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
-  return data; // { ok:true, count, items: [...] }
+function renderWords(words){
+  const g=$('mnemo-grid'); g.innerHTML='';
+  words.forEach((w,i)=>{
+    const d=document.createElement('div'); d.className='cell';
+    d.innerHTML = `<span class="badge">${i+1}</span><span>${w}</span>`;
+    g.appendChild(d);
+  });
 }
 
-/* 步骤 A：选择/注册凭证（并锁定） */
+/* ===== A：注册新的凭证 ===== */
 $('btn-register').onclick = async ()=>{
   const tip=$('reg-tip');
   try{
-    const res = await ensureCredentialWithChoice();  // { ok, id_hex, created }
-    const credHex = res?.id_hex;
-
-    if (tip) {
-      tip.innerHTML = res?.created
-        ? '<span class="ok">已注册新凭证。</span>'
-        : `<span class="ok">已可使用凭证（id: ${(credHex||'').slice(0,16)}…）。</span>`;
-    }
+    const { id_hex } = await registerNewCredential(); // 仅注册，不复用
+    selectedCredHex = id_hex;
+    tip.innerHTML = `<span class="ok">已注册新凭证：${id_hex.slice(0,16)}…</span>`;
     $('btn-gen').disabled = false;
-
-    // 🔎 新增：检查 DB 是否已有此 credential 的数据
-    if (credHex) {
-      try {
-        const q = await queryBundlesByCred(credHex);
-        if (q.count > 0) {
-          // 你可以换成自定义弹窗，这里先用 confirm
-          const latest = q.items[0]; // 最近一条
-          const ts = latest?.created_at ? new Date(latest.created_at * 1000).toLocaleString() : '未知时间';
-          const msg = [
-            `检测到这把凭证在数据库中已有 ${q.count} 条记录。`,
-            `最近一次：bundle_id=${latest?.bundle_id || '(无)'}，时间=${ts}。`,
-            '',
-            '是否继续复用该凭证？（继续 = 生成新数据；取消 = 先去核对历史）'
-          ].join('\n');
-          const goOn = confirm(msg);
-          if (!goOn) {
-            // 用户取消：你也可以在此引导一个“查看历史”的链接
-            // 例如：location.href = '/history.html?cred=' + encodeURIComponent(credHex);
-            return;
-          }
-        }
-      } catch (e) {
-        // 查询失败不阻塞主流程，只写日志
-        console.warn('query by credential failed:', e);
-      }
-    }
   }catch(e){
-    if(tip) tip.innerHTML=`<span class="err">注册/复用失败：${e?.message||e}</span>`;
+    tip.innerHTML = `<span class="err">注册失败：${e?.message||e}</span>`;
     console.error(e);
   }
 };
 
-/* 步骤 B：生成（用“步骤A同一把”+随机 salt 派生 KEK）→ 立刻全加密 → 清明文 */
+/* ===== B：生成（立刻加密） ===== */
 $('btn-gen').onclick = async ()=>{
   const tip=$('gen-tip');
+  if(!selectedCredHex){
+    tip.innerHTML = '<span class="err">请先完成步骤 A（注册新凭证）。</span>';
+    return;
+  }
   try{
-    if(!selectedCredHex) { tip.innerHTML='<span class="err">请先完成步骤 A。</span>'; return; }
-
-    // 1) 生成助记词 & 分支
+    // 1) 生成助记词 & 各链分支（在内存临时变量里）
     const mnemonic = genMnemonic(128);
-    const seed     = mnemonicToSeed(mnemonic,'');
-    const branches = exportBranches(seed);  // {ETH,BTC,EOS,TRON}
+    const words    = mnemonic.trim().split(/\s+/);
+    const seed     = mnemonicToSeed(mnemonic, '');
+    const branches = exportBranches(seed);
 
-    // 2) 用“步骤A同一把”+随机 salt 派生 KEK（如果用户触摸了另一把，会报 NotAllowed）
-    const { kek, salt, rp_id, info, credential_id, toHex } =
-      await deriveKEKWithNewSaltForCred(selectedCredHex);
+    // 2) 立刻加密：用“步骤 A 的同一把凭证 + 随机 salt”
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    const { kek, rp_id, info } = await deriveKEKWithSalt(selectedCredHex, salt);
 
-    // 3) 加密助记词
-    const encM = await aesGcmEncryptStr(kek, mnemonic);
-    sealed = { saltHex: toHex(salt), ivHex: encM.nonce, ctHex: encM.ciphertext, credId: credential_id, rp_id, info };
+    // 助记词密文
+    const mnemonicEnc = await aesGcmEncryptStr(kek, mnemonic);
+    // 各链私钥密文；公钥/xpub 不必加密就不传，或按需加密
+    const enc = async s => s ? await aesGcmEncryptStr(kek, s) : null;
 
-    // 4) 加密各链 xprv（xpub 明文保留）
-    encXprv = {};
-    xpubs   = {};
-    paths   = {};
-    // ETH
-    encXprv.ETH = await aesGcmEncryptStr(kek, branches.ETH.xprv);
-    xpubs.ETH   = branches.ETH.xpub;
-    paths.ETH   = branches.ETH.path;
-    // BTC（你之前导出的是 z* 版本 xprv/xpub）
-    encXprv.BTC = await aesGcmEncryptStr(kek, branches.BTC.xprv_z);
-    xpubs.BTC   = branches.BTC.xpub_z;
-    paths.BTC   = branches.BTC.path;
-    // EOS
-    encXprv.EOS = await aesGcmEncryptStr(kek, branches.EOS.xprv);
-    xpubs.EOS   = branches.EOS.xpub;
-    paths.EOS   = branches.EOS.path;
-    // TRON
-    encXprv.TRON = await aesGcmEncryptStr(kek, branches.TRON.xprv);
-    xpubs.TRON   = branches.TRON.xpub;
-    paths.TRON   = branches.TRON.path;
-
-    // 5) 立即清理明文
-    try{
-      for (const k of ['ETH','BTC','EOS','TRON']) {
-        if (branches[k]) { branches[k].xprv = branches[k].xprv_z = null; }
-      }
-    }catch{}
-    // 覆盖变量
-    // eslint-disable-next-line no-unused-vars
-    // (seed, mnemonic) 均不再保留
-    // 6) UI：显示卡片（默认遮挡），用户点击遮挡按钮时再解密显示 60s
-    $('mnemo-card').style.display='block';
-    renderMaskedGrid(12);
-    showMask();
-    tip.innerHTML = '<span class="ok">已生成并加密（默认遮挡）。</span>';
-    $('btn-encrypt').disabled = false;
-  }catch(e){
-    // 这里最常见的是 NotAllowedError：比如用户触摸了与步骤A不同的钥匙
-    tip.innerHTML = `<span class="err">生成失败：${e?.message||e}（请确保使用步骤 A 选择的同一把钥匙）</span>`;
-    console.error(e);
-  }
-};
-
-/* 单击解锁显示 60 秒（强制同一把钥匙 + sealed.saltHex） */
-$('reveal-btn').onclick = async ()=>{
-  try{
-    if (!sealed || !selectedCredHex) return;
-    resetAutoMask();
-
-    // 用“步骤 A 的 selectedCredHex + sealed.saltHex”派生 KEK，再解密助记词
-    const { kek } = await deriveKEKWithSalt(selectedCredHex, sealed.saltHex);
-    const mnemonic = await aesGcmDecryptStr(kek, { nonce: sealed.ivHex, ciphertext: sealed.ctHex });
-
-    // 渲染明文
-    const words = mnemonic.trim().split(/\s+/);
-    const grid=$('mnemo-grid'); grid.innerHTML='';
-    words.forEach((w,i)=>{
-      const d=document.createElement('div'); d.className='cell';
-      d.innerHTML=`<span class="badge">${i+1}</span><span>${w}</span>`;
-      grid.appendChild(d);
-    });
-    hideMask();
-
-    // 60 秒后自动遮挡并清理明文副本
-    autoMaskTimer = setTimeout(()=>{
-      renderMaskedGrid(words.length);
-      showMask();
-      // 这里不再保留明文变量
-    }, SHOW_MS);
-  }catch(e){
-    $('mask-hint').textContent = '解锁失败：请确认使用步骤 A 的同一把钥匙';
-    setTimeout(()=>{ $('mask-hint').textContent='已用 FIDO2 加密，页面仅保存密文。点击需要触摸同一把钥匙解密。'; }, 2000);
-    console.error(e);
-  }
-};
-
-/* 步骤 C：直接写库（使用 encXprv + xpubs + sealed 的 KEKInfo） */
-$('btn-encrypt').onclick = async ()=>{
-  const tip=$('encrypt-tip');
-  try{
-    if (!sealed || !encXprv || !xpubs || !paths) {
-      tip.innerHTML='<span class="err">请先完成步骤 B。</span>';
-      return;
-    }
-    if (!selectedCredHex) {
-      tip.innerHTML='<span class="err">请先完成步骤 A（选择/注册凭证）。</span>';
-      return;
-    }
-
-    // 1) 先做一次 WebAuthn PRF：强制“同一把钥匙”
-    tip.textContent = '请触摸同一把 FIDO2 安全钥匙以确认…';
-    // 这里不复用返回的 key，仅作为“同一把”校验；不同钥匙将抛 NotAllowedError/InvalidStateError
-    await deriveKEKWithSalt(selectedCredHex, sealed.saltHex);
-
-    // 2) 校验通过才真正写库
-    tip.textContent = '写入中…';
-    const body = {
-      user_id: 'web-ui',
-      note   : 'bundle-init',
-      bundle : {
-        KEKInfo: {
-          rp_id: sealed.rp_id, info: sealed.info,
-          salt: sealed.saltHex, credential_id: sealed.credId
-        },
-        chains: {
-          ETH:  { path: paths.ETH,  PubEnc: null,            PrivEnc: encXprv.ETH  },
-          BTC:  { path: paths.BTC,  PubEnc: null,            PrivEnc: encXprv.BTC  },
-          EOS:  { path: paths.EOS,  PubEnc: null,            PrivEnc: encXprv.EOS  },
-          TRON: { path: paths.TRON, PubEnc: null,            PrivEnc: encXprv.TRON },
-        }
+    sealed = {
+      credId: selectedCredHex,
+      rp_id, info,
+      saltHex: [...salt].map(b=>b.toString(16).padStart(2,'0')).join(''),
+      mnemonicEnc,
+      chains:{
+        ETH:  { path: branches.ETH.path,  PubEnc:null,                    PrivEnc: await enc(branches.ETH.xprv)   },
+        BTC:  { path: branches.BTC.path,  PubEnc:null,                    PrivEnc: await enc(branches.BTC.xprv_z) },
+        EOS:  { path: branches.EOS.path,  PubEnc:null,                    PrivEnc: await enc(branches.EOS.xprv)   },
+        TRON: { path: branches.TRON.path, PubEnc:null,                    PrivEnc: await enc(branches.TRON.xprv)  }
       }
     };
 
+    // 3) 展示卡片（默认整块遮挡）
+    $('mnemo-card').style.display = 'block';
+    renderMaskedGrid(words.length);
+    maskAll('默认遮挡。点击“显示助记词”并完成 FIDO2 验证后，明文显示 60 秒。');
+
+    // 清理明文中间变量
+    try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
+    tip.innerHTML = '<span class="ok">已生成并加密。</span>';
+    $('btn-save').disabled = false;
+  }catch(e){
+    tip.innerHTML = `<span class="err">生成失败：${e?.message||e}</span>`;
+    console.error(e);
+  }
+};
+
+/* 显示助记词（始终需 FIDO2 解密） */
+$('btn-reveal').onclick = async ()=>{
+  clearTimer();
+  try{
+    if(!sealed?.credId){ throw new Error('尚未生成'); }
+    const salt = new Uint8Array(sealed.saltHex.match(/../g).map(h=>parseInt(h,16)));
+    // 派生（同一把凭证 + 保存的 salt）
+    const { kek } = await deriveKEKWithSalt(sealed.credId, salt);
+    const mnemonic = await aesGcmDecryptStr(kek, sealed.mnemonicEnc);
+    const words    = mnemonic.trim().split(/\s+/);
+
+    renderWords(words);
+    unmask();
+
+    // 60 秒后自动遮挡并擦干净
+    revealTimer = setTimeout(()=>{
+      renderMaskedGrid(words.length);
+      maskAll('已自动遮挡。如需再次查看，请重新触摸 FIDO2。');
+      try{ for(let i=0;i<words.length;i++) words[i]=''; }catch{}
+    }, REVEAL_MS);
+  }catch(e){
+    $('mask-hint').textContent = `解密失败：${e?.message||e}`;
+    console.error(e);
+  }
+};
+
+/* ===== C：写库（再次验证同一把凭证） ===== */
+$('btn-save').onclick = async ()=>{
+  const tip=$('save-tip');
+  try{
+    if(!sealed?.credId){ throw new Error('请先完成步骤 B'); }
+
+    // 再做一次“同一把凭证 + 已保存 salt”的派生，相当于强制持有验证
+    const salt = new Uint8Array(sealed.saltHex.match(/../g).map(h=>parseInt(h,16)));
+    await deriveKEKWithSalt(sealed.credId, salt); // 仅验证可用，不再加密
+
+    const bundle = {
+      KEKInfo:{
+        rp_id: sealed.rp_id,
+        info: sealed.info,
+        salt: sealed.saltHex,
+        credential_id: sealed.credId
+      },
+      chains:{
+        ETH:  { path: sealed.chains.ETH.path,  PubEnc: null,                PrivEnc: sealed.chains.ETH.PrivEnc  },
+        BTC:  { path: sealed.chains.BTC.path,  PubEnc: null,                PrivEnc: sealed.chains.BTC.PrivEnc  },
+        EOS:  { path: sealed.chains.EOS.path,  PubEnc: null,                PrivEnc: sealed.chains.EOS.PrivEnc  },
+        TRON: { path: sealed.chains.TRON.path, PubEnc: null,                PrivEnc: sealed.chains.TRON.PrivEnc }
+      }
+    };
+
+    tip.textContent = '正在写入数据库…';
     const resp = await fetch(`${API_BASE}/bundles`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
+      method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({ user_id:'web-ui', note:'init via UI', bundle })
     });
     const data = await resp.json().catch(()=> ({}));
-    if (!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+    if(!resp.ok || !data?.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
-    tip.textContent='';
-    $('final').innerHTML = `<span class="ok">写入成功：bundle_id=${data.bundle_id}</span>`;
+    tip.innerHTML = `<span class="ok">写入成功，bundle_id=${data.bundle_id}</span>`;
   }catch(e){
-    tip.textContent='';
-    // 常见：NotAllowedError/InvalidStateError = 不是同一把钥匙 或 取消/超时
-    $('final').innerHTML = `<span class="err">写入失败：${e?.name||''} ${e?.message||e}</span>`;
+    tip.innerHTML = `<span class="err">写入失败：${e?.message||e}</span>`;
     console.error(e);
   }
 };
