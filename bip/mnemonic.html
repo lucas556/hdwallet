@@ -107,7 +107,10 @@
 import * as secp from 'https://cdn.jsdelivr.net/npm/@noble/secp256k1@2.1.0/+esm';
 import { sha256 }   from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/sha256.js';
 import { ripemd160 }from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/ripemd160.js';
-import { bytesToHex, hexToBytes } from 'https://cdn.jsdelivr.net/npm/@noble/hashes@1.4.0/utils.js';
+
+/* ===== 内置 bytes<->hex 工具，避免 utils 导出差异 ===== */
+function bytesToHex(u8){ let s=''; for (let i=0;i<u8.length;i++) s+=u8[i].toString(16).padStart(2,'0'); return s; }
+function hexToBytes(hex){ const h=hex.replace(/^0x/i,''); const out=new Uint8Array(h.length/2); for(let i=0;i<out.length;i++) out[i]=parseInt(h.slice(i*2,i*2+2),16); return out; }
 
 /* ===== 小工具 ===== */
 const te = new TextEncoder();
@@ -124,24 +127,18 @@ function concatBytes(...arrs){
   return out;
 }
 function ser32(i){ const b = new Uint8Array(4); b[0]=(i>>>24)&255;b[1]=(i>>>16)&255;b[2]=(i>>>8)&255;b[3]=i&255; return b; }
-function ser256(i){ // BN -> 32-byte big-endian
-  let hex = i.toString(16).padStart(64, '0');
-  return hexToBytes(hex);
-}
-function serP(P){ // 压缩公钥
-  return secp.Point.fromHex(P).toRawBytes(true);
-}
+function ser256(i){ let hex = i.toString(16).padStart(64, '0'); return hexToBytes(hex); }
+function serP(P){ return secp.Point.fromHex(P).toRawBytes(true); }
 function hash160(data){ return ripemd160(sha256(data)); }
-function base58encode(data){ // data: Uint8Array
+function base58encode(data){
   const ALPH='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
   let x = BigInt('0x'+bytesToHex(data));
   let out = '';
   while (x > 0n){ const mod = x % 58n; out = ALPH[Number(mod)] + out; x = x / 58n; }
-  // 前导 0 -> '1'
   for (let i=0;i<data.length && data[i]===0;i++) out = '1' + out;
   return out || '1';
 }
-function base58check(payload){ // payload: Uint8Array
+function base58check(payload){
   const checksum = sha256(sha256(payload)).slice(0,4);
   return base58encode(concatBytes(payload, checksum));
 }
@@ -169,7 +166,7 @@ async function loadWordlistOnce(){
     throw new Error('english.txt 校验失败：SHA-256 不匹配');
   }
   const text = td.decode(buf).replace(/\r/g,'').trim();
-  WORDS = text.split('\n'); // 不再强制检查 2048 行
+  WORDS = text.split('\n');
   return WORDS;
 }
 function bitsToIndices(bits, group=11){
@@ -188,8 +185,8 @@ function bytesToBits(u8){
 }
 async function genMnemonic(entBits = 128){
   if(!WORDS) await loadWordlistOnce();
-  const ENT = entBits;               // 128 or 256
-  const CS  = ENT / 32;              // checksum length
+  const ENT = entBits;
+  const CS  = ENT / 32;
   const ent = new Uint8Array(ENT/8); crypto.getRandomValues(ent);
   const hash = sha256(ent);
   const entBitsArr  = bytesToBits(ent);
@@ -200,27 +197,28 @@ async function genMnemonic(entBits = 128){
   return words.join(' ');
 }
 async function mnemonicToSeed(mnemonic, passphrase){
-  const salt = te.encode('mnemonic' + (passphrase || '')).buffer; // NFKD：浏览器 te 默认 UTF-8；若需要严格 NFKD，可手动 normalize
+  const salt = te.encode('mnemonic' + (passphrase || '')).buffer;
   const pwd  = te.encode(mnemonic).buffer;
   const dk   = await pbkdf2_sha512(new Uint8Array(pwd), new Uint8Array(salt), 2048, 64);
-  return dk; // 64 bytes
+  return dk;
 }
 
 /* ===== BIP32：Root & CKDpriv ===== */
-async function bip32RootFromSeed(seed){ // seed: Uint8Array(64)
+async function bip32RootFromSeed(seed){
   const I = await hmacSHA512(te.encode('Bitcoin seed'), seed);
   const IL = I.slice(0,32), IR = I.slice(32);
   let k = BigInt('0x'+bytesToHex(IL));
   if (k === 0n || k >= curveN) throw new Error('Invalid master key');
   const chain = IR;
   const key32 = IL;
-  const pub  = secp.getPublicKey(key32, true); // compressed
+  const pub  = secp.getPublicKey(key32, true);
   const depth=0, child=0, parentFP = new Uint8Array([0,0,0,0]);
   const xprv = serializeXPRV(key32, chain, depth, parentFP, child);
   const xpub = serializeXPUB(pub,  chain, depth, parentFP, child);
   return { key: key32, chain, pub, depth, child, parentFP, xprv, xpub };
 }
-async function CKDpriv({key, chain, depth, child, pub}, index, hardened){
+async function CKDpriv(node, index, hardened){
+  const { key, chain, depth, pub } = node;
   const idx = hardened ? (index | 0x80000000) : index;
   let data;
   if (hardened){
@@ -233,46 +231,31 @@ async function CKDpriv({key, chain, depth, child, pub}, index, hardened){
   const IL = I.slice(0,32), IR = I.slice(32);
   let ki = (BigInt('0x'+bytesToHex(IL)) + BigInt('0x'+bytesToHex(key))) % curveN;
   if (ki === 0n) throw new Error('Invalid child key');
-  const keyChild = ser256(ki);
+  const keyChild = hexToBytes(ki.toString(16).padStart(64,'0'));
   const chainChild = IR;
   const depthChild = depth + 1;
-  const parentFP = hash160(pub)[0] ? hash160(pub).slice(0,4) : new Uint8Array([0,0,0,0]);
+  const parentFP = hash160(pub).slice(0,4);
   const pubChild = secp.getPublicKey(keyChild, true);
   const xprv = serializeXPRV(keyChild, chainChild, depthChild, parentFP, idx);
   const xpub = serializeXPUB(pubChild, chainChild, depthChild, parentFP, idx);
   return { key: keyChild, chain: chainChild, pub: pubChild, depth: depthChild, child: idx, parentFP, xprv, xpub };
 }
 
-/* ===== xprv/xpub 序列化（版本号） ===== */
+/* ===== xprv/xpub 序列化 ===== */
 function serializeXPUB(pub, chain, depth, parentFP, child){
   const ver = new Uint8Array([0x04,0x88,0xB2,0x1E]); // xpub
-  const payload = concatBytes(
-    ver,
-    new Uint8Array([depth&255]),
-    parentFP,
-    ser32(child),
-    chain,
-    pub
-  );
+  const payload = concatBytes(ver, new Uint8Array([depth&255]), parentFP, ser32(child), chain, pub);
   return base58check(payload);
 }
 function serializeXPRV(key, chain, depth, parentFP, child){
   const ver = new Uint8Array([0x04,0x88,0xAD,0xE4]); // xprv
-  const payload = concatBytes(
-    ver,
-    new Uint8Array([depth&255]),
-    parentFP,
-    ser32(child),
-    chain,
-    new Uint8Array([0]), // leading 0
-    key
-  );
+  const payload = concatBytes(ver, new Uint8Array([depth&255]), parentFP, ser32(child), chain, new Uint8Array([0]), key);
   return base58check(payload);
 }
 
-/* ===== 绑定 UI 逻辑 ===== */
+/* ===== 绑定 UI ===== */
 let gSeed = null;
-let gRoot = null; // { key, chain, pub, xprv, xpub, ... }
+let gRoot = null;
 
 $('btn-load').onclick = async ()=>{
   const tip = $('wl-tip');
@@ -300,7 +283,6 @@ $('btn-gen').onclick = async ()=>{
     $('out-seed').textContent     = bytesToHex(seed);
     $('mnemo-box').style.display  = 'block';
 
-    // Root m
     gRoot = await bip32RootFromSeed(seed);
     $('out-root-xprv').textContent = gRoot.xprv;
     $('out-root-xpub').textContent = gRoot.xpub;
