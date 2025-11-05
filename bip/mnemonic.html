@@ -127,9 +127,9 @@
 
 <script type="module">
 // ===== Imports =====
-import { keccak256 } from 'https://cdn.jsdelivr.net/npm/js-sha3@0.9.2/+esm';
+import * as secp from 'https://esm.run/@noble/secp256k1@1.7.1';
 import { ripemd160 } from 'https://esm.run/@noble/hashes@1.4.0/ripemd160';
-import { keccak256 }  from 'https://esm.run/js-sha3@0.9.2';
+import { keccak256 } from 'https://cdn.jsdelivr.net/npm/js-sha3@0.9.2/+esm';
 
 // ===== Utils =====
 const te = new TextEncoder();
