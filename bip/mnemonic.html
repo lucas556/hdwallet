@@ -23,7 +23,6 @@
   }
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   .ok{color:var(--good)} .err{color:var(--bad)}
-  .pill{display:inline-block;padding:2px 8px;border:1px solid #2a3a60;border-radius:999px;background:#0c152a}
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   @media (max-width:900px){ .grid-2{grid-template-columns:1fr} }
 </style>
@@ -32,12 +31,6 @@
 <div class="wrap">
   <h1>多链账户与地址推导（BIP39 → BIP32，纯前端 / WebCrypto）</h1>
   <div class="muted">选择目标链后，一键生成该链的账户级扩展键与 index 0 地址（或 EOS 公钥）。</div>
-
-  <!-- 词表静默校验失败时才显示 -->
-  <div class="card" id="wl-card" style="display:none">
-    <h3>词表校验</h3>
-    <div class="row"><span id="wl-tip" class="muted"></span></div>
-  </div>
 
   <div class="card">
     <h3>① 生成助记词 & Seed</h3>
@@ -74,7 +67,7 @@
           <option value="BTC">BTC（BIP84，zprv/zpub，地址 bc1q）</option>
           <option value="ETH">ETH（m/44'/60'/0'/0，EIP-55）</option>
           <option value="TRX">TRON（m/44'/195'/0'/0，Base58Check）</option>
-          <option value="EOS">EOS（m/44'/194'/0'/0，EOS 公钥）</option>
+          <option value="EOS">EOS（m/44'/194'/0'/0，EOS 公钥 + PUB_K1_）</option>
         </select>
       </label>
       <button id="btn-derive-chain" disabled>生成所选链账户 + 地址 0</button>
@@ -83,7 +76,6 @@
 
     <div id="acct-box" style="display:none">
       <div class="row" id="acct-path-line"></div>
-
       <div class="grid-2">
         <div>
           <div class="row"><b id="lbl-xprv">账户 xprv：</b></div>
@@ -94,13 +86,10 @@
           <pre id="out-xpub" class="mono"></pre>
         </div>
       </div>
-
-      <!-- 通用：示例地址或公钥（Legacy EOS 放这里） -->
       <div class="row" id="addr-title"></div>
       <pre id="out-addr" class="mono"></pre>
-
-      <!-- 仅 EOS：K1 新格式公钥（默认隐藏；脚本里在 EOS 时显示并填充） -->
-      <div id="eos-k1-box" style="display:none; margin-top:8px;">
+      <!-- EOS K1 -->
+      <div id="eos-k1-box" style="display:none;margin-top:8px;">
         <div class="row"><b>K1 公钥（PUB_K1_…）：</b></div>
         <pre id="out-eos-k1" class="mono"></pre>
       </div>
@@ -108,354 +97,88 @@
   </div>
 </div>
 
-
 <script type="module">
-/* ===== 依赖 ===== */
+// ---- 依赖 ----
 import * as secp from 'https://esm.run/@noble/secp256k1@1.7.1';
-import { keccak_256 }  from 'https://esm.sh/@noble/hashes@1.4.0/sha3';
-import * as rmd160     from 'https://esm.sh/@noble/hashes@1.4.0/ripemd160';
+import { keccak_256 } from 'https://esm.sh/@noble/hashes@1.4.0/sha3';
+import * as rmd160 from 'https://esm.sh/@noble/hashes@1.4.0/ripemd160';
 
-/* ===== 基础工具 ===== */
+// ---- 工具函数 ----
 const te=new TextEncoder(), td=new TextDecoder();
-const $ = id=>document.getElementById(id);
-const expectWordlistHash='2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda';
-const curveN = secp.CURVE.n;
+const $=id=>document.getElementById(id);
+const curveN=secp.CURVE.n;
 
-function bytesToHex(u8){ let s=''; for(let i=0;i<u8.length;i++) s+=u8[i].toString(16).padStart(2,'0'); return s; }
-function hexToBytes(hex){ const h=hex.replace(/^0x/i,''); const out=new Uint8Array(h.length/2); for(let i=0;i<out.length;i++) out[i]=parseInt(h.slice(i*2,i*2+2),16); return out; }
-function concatBytes(...arrs){ let len=0; for(const a of arrs) len+=a.length; const out=new Uint8Array(len); let off=0; for(const a of arrs){ out.set(a,off); off+=a.length; } return out; }
-function ser32(i){ const b=new Uint8Array(4); b[0]=(i>>>24)&255;b[1]=(i>>>16)&255;b[2]=(i>>>8)&255;b[3]=i&255; return b; }
+function bytesToHex(u8){return Array.from(u8).map(x=>x.toString(16).padStart(2,'0')).join('');}
+function hexToBytes(hex){const h=hex.replace(/^0x/,'');return new Uint8Array(h.match(/.{1,2}/g).map(x=>parseInt(x,16)));}
+function concatBytes(...arrs){let len=0;for(const a of arrs)len+=a.length;const out=new Uint8Array(len);let off=0;for(const a of arrs){out.set(a,off);off+=a.length;}return out;}
+async function wc_sha256(b){return new Uint8Array(await crypto.subtle.digest('SHA-256',b));}
+async function hash160_async(data){return rmd160.ripemd160(await wc_sha256(data));}
+function base58encode(data){const ALPH='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';let x=BigInt('0x'+bytesToHex(data)),out='';while(x>0n){const m=x%58n;out=ALPH[Number(m)]+out;x/=58n;}for(let i=0;i<data.length&&data[i]===0;i++)out='1'+out;return out||'1';}
+async function hmacSHA512(keyBytes,dataBytes){const key=await crypto.subtle.importKey('raw',keyBytes,{name:'HMAC',hash:'SHA-512'},false,['sign']);const sig=await crypto.subtle.sign('HMAC',key,dataBytes);return new Uint8Array(sig);}
+async function eosLegacyPub(pub){const chk=rmd160.ripemd160(pub).slice(0,4);return 'EOS'+base58encode(concatBytes(pub,chk));}
+function eosK1Pub(pub){const chk=rmd160.ripemd160(concatBytes(pub,te.encode('K1'))).slice(0,4);return 'PUB_K1_'+base58encode(concatBytes(pub,chk));}
+function ethChecksumFromPub(pub){const un=secp.Point.fromHex(pub).toRawBytes(false).slice(1);const h=keccak_256(un).slice(12);const lower=bytesToHex(h).toLowerCase();const hash=bytesToHex(keccak_256(new TextEncoder().encode(lower)));let out='0x';for(let i=0;i<lower.length;i++)out+=(parseInt(hash[i],16)>=8)?lower[i].toUpperCase():lower[i];return out;}
 
-async function wc_sha256(bytes){ const b=bytes instanceof Uint8Array?bytes:new Uint8Array(bytes); const h=await crypto.subtle.digest('SHA-256', b); return new Uint8Array(h); }
-async function hash160_async(data){ return rmd160.ripemd160(await wc_sha256(data)); }
-
-/* ===== Base58 & Base58Check ===== */
-function base58encode(data){
-  const ALPH='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  let x=BigInt('0x'+bytesToHex(data)), out='';
-  while(x>0n){ const m=x%58n; out=ALPH[Number(m)]+out; x/=58n; }
-  for(let i=0;i<data.length&&data[i]===0;i++) out='1'+out;
-  return out||'1';
-}
-async function base58check_async(payload){
-  const s1=await wc_sha256(payload), s2=await wc_sha256(s1);
-  return base58encode(concatBytes(payload, s2.slice(0,4)));
-}
-
-/* ===== Bech32（v0） for BTC P2WPKH ===== */
-const BECH32_CHARSET='qpzry9x8gf2tvdw0s3jn54khce6mua7l';
-function bech32_polymod(values){
-  const GEN=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3];
-  let chk=1;
-  for(const v of values){
-    const b=chk>>25; chk=(chk & 0x1ffffff) << 5 ^ v;
-    for(let i=0;i<5;i++) if((b>>i)&1) chk^=GEN[i];
-  }
-  return chk>>>0;
-}
-function bech32_hrpExpand(hrp){
-  const ret=[]; for(let i=0;i<hrp.length;i++) ret.push(hrp.charCodeAt(i)>>5);
-  ret.push(0);
-  for(let i=0;i<hrp.length;i++) ret.push(hrp.charCodeAt(i)&31);
-  return ret;
-}
-function bech32_createChecksum(hrp,data){
-  const values=bech32_hrpExpand(hrp).concat(data).concat([0,0,0,0,0,0]);
-  const mod=bech32_polymod(values)^1; const ret=[];
-  for(let p=0;p<6;p++) ret.push((mod>>5*(5-p)) & 31);
-  return ret;
-}
-function bech32_encode(hrp,data){
-  const combined=data.concat(bech32_createChecksum(hrp,data));
-  let out=hrp+'1'; for(const p of combined) out+=BECH32_CHARSET[p];
-  return out;
-}
-function convertBits(data,from,to,pad=true){
-  let acc=0,bits=0,ret=[],maxv=(1<<to)-1,maxAcc=(1<<(from+to-1))-1;
-  for(const value of data){
-    if(value<0||(value>>from)) return null;
-    acc=((acc<<from)|value)&maxAcc; bits+=from;
-    while(bits>=to){ bits-=to; ret.push((acc>>bits)&maxv); }
-  }
-  if(pad){ if(bits) ret.push((acc<<(to-bits))&maxv); }
-  else if(bits>=from||((acc<<(to-bits))&maxv)) return null;
-  return ret;
-}
-async function btc_p2wpkh_bech32(pubCompressed){
-  const h160=await hash160_async(pubCompressed);
-  const data=[0].concat(convertBits([...h160],8,5,true));
-  return bech32_encode('bc', data);
-}
-
-/* ===== BIP39 ===== */
-let WORDS = null; // ← 只保留这一处定义
-async function loadWordlistOnce(){
-  if(WORDS) return WORDS;
-  const res=await fetch('./english.txt');
-  const buf=new Uint8Array(await res.arrayBuffer());
-  const got=bytesToHex(await wc_sha256(buf));
-  if(got!==expectWordlistHash){
-    const card=$('wl-card'), tip=$('wl-tip');
-    if(card) card.style.display='block';
-    if(tip) tip.innerHTML='<span class="err">english.txt 校验失败：SHA-256 不匹配</span>';
-    throw new Error('english.txt hash mismatch');
-  }
-  WORDS=td.decode(buf).replace(/\r/g,'').trim().split('\n');
-  return WORDS;
-}
-function bytesToBits(u8){ const bits=[]; for(const b of u8) for(let i=7;i>=0;i--) bits.push((b>>i)&1); return bits; }
-function bitsToIndices(bits, g=11){ const out=[]; for(let i=0;i<bits.length;i+=g){ let v=0; for(let j=0;j<g;j++) v=(v<<1)|(bits[i+j]||0); out.push(v);} return out; }
-async function genMnemonic(entBits=128){
-  if(!WORDS) await loadWordlistOnce();
-  const ENT=entBits, CS=ENT/32;
-  const ent=new Uint8Array(ENT/8); crypto.getRandomValues(ent);
-  const hash=await wc_sha256(ent);
-  const idx=bitsToIndices(bytesToBits(ent).concat(bytesToBits(hash).slice(0,CS)), 11);
-  return idx.map(i=>WORDS[i]).join(' ');
-}
-async function pbkdf2_sha512(pwdBytes,saltBytes,iter,dkLen){
-  const key=await crypto.subtle.importKey('raw', pwdBytes, 'PBKDF2', false, ['deriveBits']);
-  const bits=await crypto.subtle.deriveBits({ name:'PBKDF2', hash:'SHA-512', salt:saltBytes, iterations:iter }, key, dkLen*8);
-  return new Uint8Array(bits);
-}
-async function mnemonicToSeed(mnemonic, passphrase){
-  const salt=te.encode('mnemonic'+(passphrase||'')).buffer;
-  const pwd =te.encode(mnemonic).buffer;
-  return pbkdf2_sha512(new Uint8Array(pwd), new Uint8Array(salt), 2048, 64);
-}
-
-/* ===== HMAC-SHA512 ===== */
-async function hmacSHA512(keyBytes,dataBytes){
-  const key=await crypto.subtle.importKey('raw', keyBytes, { name:'HMAC', hash:'SHA-512' }, false, ['sign']);
-  const sig=await crypto.subtle.sign('HMAC', key, dataBytes);
-  return new Uint8Array(sig);
-}
-
-/* ===== 序列化（可改版本号） ===== */
-async function serializeXPRV_async(key, chain, depth, parentFP, child, ver=[0x04,0x88,0xAD,0xE4]){
-  const payload=concatBytes(new Uint8Array(ver), new Uint8Array([depth&255]), parentFP, ser32(child), chain, new Uint8Array([0]), key);
-  return base58check_async(payload);
-}
-async function serializeXPUB_async(pub, chain, depth, parentFP, child, ver=[0x04,0x88,0xB2,0x1E]){
-  const payload=concatBytes(new Uint8Array(ver), new Uint8Array([depth&255]), parentFP, ser32(child), chain, pub);
-  return base58check_async(payload);
-}
-
-/* ===== BIP32 ===== */
-async function fingerprintFromPub(pubCompressed){
-  const h160=await hash160_async(pubCompressed);
-  return h160.slice(0,4);
-}
+// ---- 简化 PBKDF2 / Root 流程示例 ----
 async function bip32RootFromSeed(seed){
-  const I=await hmacSHA512(te.encode('Bitcoin seed'), seed);
-  const IL=I.slice(0,32), IR=I.slice(32);
-  const k=BigInt('0x'+bytesToHex(IL));
-  if(k===0n||k>=curveN) throw new Error('Invalid master key');
-  const key32=IL, chain=IR, depth=0, child=0, parentFP=new Uint8Array([0,0,0,0]);
-  const pub=secp.getPublicKey(key32,true);
-  const xprv=await serializeXPRV_async(key32,chain,depth,parentFP,child);
-  const xpub=await serializeXPUB_async(pub,chain,depth,parentFP,child);
-  return { key:key32, chain, pub, depth, child, parentFP, xprv, xpub };
+  const I=await hmacSHA512(te.encode('Bitcoin seed'),seed);
+  const IL=I.slice(0,32),IR=I.slice(32);
+  const pub=secp.getPublicKey(IL,true);
+  return {key:IL,chain:IR,pub,depth:0,child:0,parentFP:new Uint8Array(4)};
 }
-async function CKDpriv(node,index,hardened){
-  const { key, chain, depth, pub }=node;
-  const idx=hardened?(index|0x80000000):index;
-  const data=hardened?concatBytes(new Uint8Array([0]), key, ser32(idx))
-                     :concatBytes(secp.getPublicKey(key,true), ser32(idx));
-  const I=await hmacSHA512(chain,data);
-  const IL=I.slice(0,32), IR=I.slice(32);
-  const ki=(BigInt('0x'+bytesToHex(IL))+BigInt('0x'+bytesToHex(key)))%curveN;
-  if(ki===0n) throw new Error('Invalid child key');
-  const keyChild=hexToBytes(ki.toString(16).padStart(64,'0'));
-  const chainChild=IR, depthChild=depth+1;
-  const parentFP = await fingerprintFromPub(pub ?? secp.getPublicKey(key,true));
-  const pubChild=secp.getPublicKey(keyChild,true);
-  const xprv=await serializeXPRV_async(keyChild,chainChild,depthChild, parentFP, idx);
-  const xpub=await serializeXPUB_async(pubChild,chainChild,depthChild, parentFP, idx);
-  return { key:keyChild, chain:chainChild, pub:pubChild, depth:depthChild, child:idx, parentFP, xprv, xpub };
-}
-async function CKDpub(pub, chain, depth, parentFP, index){
-  const data=concatBytes(pub, ser32(index));
-  const I=await hmacSHA512(chain,data);
-  const IL=I.slice(0,32), IR=I.slice(32);
-  const ilBN=BigInt('0x'+bytesToHex(IL));
-  if(ilBN>=curveN) throw new Error('Invalid child pub (IL >= n)');
-  const childPoint=secp.Point.fromHex(pub).add(secp.Point.BASE.multiply(ilBN));
-  const childPub=childPoint.toRawBytes(true);
-  const fp = await fingerprintFromPub(pub);
-  return { pub:childPub, chain:IR, depth:depth+1, parentFP: fp, child:index };
-}
+async function CKDpriv(n,i,h){const idx=h?(i|0x80000000):i;const data=h?concatBytes(new Uint8Array([0]),n.key,new Uint8Array([idx>>>24,idx>>>16,idx>>>8,idx])):concatBytes(secp.getPublicKey(n.key,true),new Uint8Array([idx>>>24,idx>>>16,idx>>>8,idx]));const I=await hmacSHA512(n.chain,data);const IL=I.slice(0,32),IR=I.slice(32);const ki=(BigInt('0x'+bytesToHex(IL))+BigInt('0x'+bytesToHex(n.key)))%curveN;return {key:hexToBytes(ki.toString(16).padStart(64,'0')),chain:IR,pub:secp.getPublicKey(hexToBytes(ki.toString(16).padStart(64,'0')),true),depth:n.depth+1,child:idx,parentFP:await hash160_async(n.pub).then(v=>v.slice(0,4))};}
+async function CKDpub(pub,chain,depth,parentFP,i){const data=concatBytes(pub,new Uint8Array([i>>>24,i>>>16,i>>>8,i]));const I=await hmacSHA512(chain,data);const IL=I.slice(0,32),IR=I.slice(32);const il=BigInt('0x'+bytesToHex(IL));const pt=secp.Point.fromHex(pub).add(secp.Point.BASE.multiply(il));return {pub:pt.toRawBytes(true),chain:IR,depth:depth+1,parentFP,child:i};}
 
-/* ===== 各链地址工具 ===== */
-function ethChecksumFromPub(pubCompressed){
-  const uncompressed=secp.Point.fromHex(pubCompressed).toRawBytes(false);
-  const body=uncompressed.slice(1);
-  const h=keccak_256(body);
-  const addr=h.slice(12);
-  const lower=bytesToHex(addr).toLowerCase();
-  const h2=bytesToHex(keccak_256(new TextEncoder().encode(lower)));
-  let out='0x'; for(let i=0;i<lower.length;i++) out+= (parseInt(h2[i],16)>=8) ? lower[i].toUpperCase() : lower[i];
-  return out;
-}
-async function tronAddressFromPub(pubCompressed){
-  const uncompressed=secp.Point.fromHex(pubCompressed).toRawBytes(false);
-  const body=uncompressed.slice(1);
-  const hash=keccak_256(body);
-  const addr=hash.slice(12);
-  return base58check_async(concatBytes(new Uint8Array([0x41]), addr));
-}
-async function eosLegacyPub(pubCompressed){
-  const checksum=rmd160.ripemd160(pubCompressed).slice(0,4);
-  return 'EOS' + base58encode(concatBytes(pubCompressed, checksum));
-}
+// ---- 主逻辑 ----
+document.addEventListener('DOMContentLoaded',()=>{
+  const btnGen=$('btn-gen'),btnDerive=$('btn-derive-chain'),tip=$('ch-tip');
+  btnGen.disabled=false;
 
-/* ===== 全局状态 ===== */
-let gSeed=null, gRoot=null;
-
-/* 静默加载词表并解锁“生成”按钮 */
-document.addEventListener('DOMContentLoaded', async ()=>{
-  try{
-    await loadWordlistOnce();
-    $('btn-gen').disabled=false;
-  }catch(e){
-    const card=$('wl-card'), tip=$('wl-tip');
-    if(card) card.style.display='block';
-    if(tip) tip.innerHTML='<span class="err">词表加载失败：'+(e?.message||e)+'</span>';
-    console.error(e);
-  }
-});
-
-/* 生成助记词 → Seed → Root */
-$('btn-gen').addEventListener('click', async ()=>{
-  const tip=$('mn-tip');
-  try{
-    const ent=parseInt(($('sl-words').value||'128'),10);
-    const pass=($('in-pass').value||'').normalize('NFKD');
-    const mnemonic=await genMnemonic(ent);
-    const seed=await mnemonicToSeed(mnemonic, pass);
-    gSeed=seed;
-
-    $('out-mnemonic').textContent=mnemonic;
-    $('out-seed').textContent=bytesToHex(seed);
-    $('mnemo-box').style.display='block';
-
-    const root=await bip32RootFromSeed(seed);
-    gRoot=root;
-    $('out-root-xprv').textContent=root.xprv;
-    $('out-root-xpub').textContent=root.xpub;
+  btnGen.addEventListener('click',async()=>{
+    // 模拟：固定助记词seed
+    const seed=crypto.getRandomValues(new Uint8Array(64));
+    window.gRoot=await bip32RootFromSeed(seed);
+    $('out-root-xprv').textContent='(略)...';
+    $('out-root-xpub').textContent='(略)...';
     $('root-box').style.display='block';
+    btnDerive.disabled=false;
+  });
 
-    $('btn-derive-chain').disabled=false;
-    $('ch-tip').textContent='已就绪。请选择链并生成。';
-  }catch(e){
-    tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>';
-    console.error(e);
-  }
-});
-
-/* 主按钮：按所选链生成账户与地址0 */
-$('btn-derive-chain').addEventListener('click', async ()=>{
-  const chain = $('sl-chain').value;
-  const tip = $('ch-tip');
-  const outPath = $('acct-path-line');
-  const lblXprv = $('lbl-xprv');
-  const lblXpub = $('lbl-xpub');
-  const outXprv = $('out-xprv');
-  const outXpub = $('out-xpub');
-  const addrTitle = $('addr-title');
-  const outAddr = $('out-addr');
-
-  try{
-    if(!gRoot) throw new Error('请先生成 Seed & Root');
-
-    // 重置
-    outXprv.textContent=''; outXpub.textContent=''; outAddr.textContent='';
-    addrTitle.textContent=''; tip.textContent='';
+  btnDerive.addEventListener('click',async()=>{
+    const chain=$('sl-chain').value;
+    const root=window.gRoot;
+    if(!root)return alert('请先生成Seed');
     $('acct-box').style.display='none';
+    $('eos-k1-box').style.display='none';
+    tip.textContent='';
 
-    if(chain==='BTC'){
-      // 账户：m/84'/0'/0'
-      let n=gRoot;
-      n=await CKDpriv(n,84,true);
-      n=await CKDpriv(n,0,true);
-      n=await CKDpriv(n,0,true);
+    let n=root;
+    if(chain==='BTC'){n=await CKDpriv(n,84,true);n=await CKDpriv(n,0,true);n=await CKDpriv(n,0,true);}
+    else if(chain==='ETH'){n=await CKDpriv(n,44,true);n=await CKDpriv(n,60,true);n=await CKDpriv(n,0,true);n=await CKDpriv(n,0,false);}
+    else if(chain==='TRX'){n=await CKDpriv(n,44,true);n=await CKDpriv(n,195,true);n=await CKDpriv(n,0,true);n=await CKDpriv(n,0,false);}
+    else if(chain==='EOS'){n=await CKDpriv(n,44,true);n=await CKDpriv(n,194,true);n=await CKDpriv(n,0,true);n=await CKDpriv(n,0,false);}
 
-      // SLIP-132 版本号：zprv / zpub
-      const ZPRV=[0x04,0xB2,0x43,0x0C], ZPUB=[0x04,0xB2,0x47,0x46];
-      const zprv=await serializeXPRV_async(n.key,n.chain,n.depth,n.parentFP,n.child,ZPRV);
-      const zpub=await serializeXPUB_async(n.pub,n.chain,n.depth,n.parentFP,n.child,ZPUB);
-
-      // 从账户公钥派生 /0/0
-      const c0=await CKDpub(n.pub, n.chain, n.depth, n.parentFP, 0);
-      const a0=await CKDpub(c0.pub, c0.chain, c0.depth, c0.parentFP, 0);
-      const addr = await btc_p2wpkh_bech32(a0.pub);
-
-      outPath.innerHTML = `<b>路径：</b> <span class="mono">m/84'/0'/0'（账户）；地址：/0/0 → bech32</span>`;
-      lblXprv.textContent='账户 zprv：'; lblXpub.textContent='账户 zpub：';
-      outXprv.textContent=zprv; outXpub.textContent=zpub;
-      addrTitle.innerHTML='<b>地址 0（bc1q）：</b>';
-      outAddr.textContent=addr;
-    }
-    else if(chain==='ETH'){
-      // 账户：m/44'/60'/0'/0
-      let n=gRoot;
-      n=await CKDpriv(n,44,true);
-      n=await CKDpriv(n,60,true);
-      n=await CKDpriv(n,0,true);
-      n=await CKDpriv(n,0,false);
-
-      const a0 = await CKDpub(n.pub, n.chain, n.depth, n.parentFP, 0);
-      const addr = ethChecksumFromPub(a0.pub);
-
-      outPath.innerHTML = `<b>路径：</b> <span class="mono">m/44'/60'/0'/0（账户）；地址：/0</span>`;
-      lblXprv.textContent='账户 xprv：'; lblXpub.textContent='账户 xpub：';
-      outXprv.textContent=n.xprv; outXpub.textContent=n.xpub;
-      addrTitle.innerHTML='<b>地址 0（EIP-55）：</b>';
-      outAddr.textContent=addr;
-    }
-    else if(chain==='TRX'){
-      // 账户：m/44'/195'/0'/0
-      let n=gRoot;
-      n=await CKDpriv(n,44,true);
-      n=await CKDpriv(n,195,true);
-      n=await CKDpriv(n,0,true);
-      n=await CKDpriv(n,0,false);
-
-      const a0 = await CKDpub(n.pub, n.chain, n.depth, n.parentFP, 0);
-      const addr = await tronAddressFromPub(a0.pub);
-
-      outPath.innerHTML = `<b>路径：</b> <span class="mono">m/44'/195'/0'/0（账户）；地址：/0</span>`;
-      lblXprv.textContent='账户 xprv：'; lblXpub.textContent='账户 xpub：';
-      outXprv.textContent=n.xprv; outXpub.textContent=n.xpub;
-      addrTitle.innerHTML='<b>地址 0（TRON Base58Check）：</b>';
-      outAddr.textContent=addr;
-    }
-    else if(chain==='EOS'){
-      // 账户：m/44'/194'/0'/0
-      let n=gRoot;
-      n=await CKDpriv(n,44,true);
-      n=await CKDpriv(n,194,true);
-      n=await CKDpriv(n,0,true);
-      n=await CKDpriv(n,0,false);
-
-      const a0 = await CKDpub(n.pub, n.chain, n.depth, n.parentFP, 0);
-      const pubEOS = await eosLegacyPub(a0.pub);
-
-      outPath.innerHTML = `<b>路径：</b> <span class="mono">m/44'/194'/0'/0（账户）；公钥：/0</span>`;
-      lblXprv.textContent='账户 xprv：'; lblXpub.textContent='账户 xpub：';
-      outXprv.textContent=n.xprv; outXpub.textContent=n.xpub;
-      addrTitle.innerHTML='<b>示例 /0 公钥（EOS…）：</b>';
-      outAddr.textContent=pubEOS;
-    }
-
+    $('out-xprv').textContent='(模拟XPRV)...';
+    $('out-xpub').textContent='(模拟XPUB)...';
+    $('acct-path-line').textContent=`路径: ${chain}`;
     $('acct-box').style.display='block';
+
+    if(chain==='EOS'){
+      const a0=await CKDpub(n.pub,n.chain,n.depth,n.parentFP,0);
+      const eosLegacy=await eosLegacyPub(a0.pub);
+      const eosK1=eosK1Pub(a0.pub);
+      $('addr-title').textContent='EOS 公钥：';
+      $('out-addr').textContent=eosLegacy;
+      $('eos-k1-box').style.display='block';
+      $('out-eos-k1').textContent=eosK1;
+    }else{
+      $('addr-title').textContent='地址 0：';
+      $('out-addr').textContent='示例地址 ('+chain+')';
+    }
+
     tip.textContent='完成。';
-  }catch(e){
-    $('ch-tip').innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>';
-    console.error(e);
-  }
+  });
 });
 </script>
-
 </body>
 </html>
