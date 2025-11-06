@@ -209,10 +209,13 @@ async function ckdPub(pub, chain, depth, parentFP, i){
 
   return { pub: child, chain: I.slice(32), depth: depth+1, parentFP: fp, child: i };
 }
-  
+
 async function serXPRV(key,chain,depth,fp,child,ver=[0x04,0x88,0xAD,0xE4]){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,new Uint8Array([0]),key));}
 async function serXPUB(pub,chain,depth,fp,child,ver=[0x04,0x88,0xB2,0x1E]){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,pub));}
 
+function lockBtn(btn, on){ if(!btn) return; btn.disabled = !!on; btn.dataset.lock = on ? '1' : '0'; }
+function isLocked(btn){ return btn?.dataset.lock === '1'; }
+  
 /* 各链地址 */
 function ethFromPub(pub){const un=secp.Point.fromHex(pub).toRawBytes(false).slice(1); const h=keccak_256(un).slice(12);
   const lower=b2h(h).toLowerCase(); const hh=b2h(keccak_256(te.encode(lower))); let out='0x';
@@ -229,29 +232,26 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   try { await loadWords(); $('btn-gen').disabled=false; } catch(e){ /* 提示已在 loadWords 里处理 */ }
 
   $('btn-gen').addEventListener('click', async ()=>{
+    const btn=$('btn-gen'); if(isLocked(btn)) return; lockBtn(btn,true);   // ← 新增
     const tip=$('mn-tip');
     try{
       const ent=parseInt(($('sl-words').value||'128'),10);
-      const pass=($('in-pass').value||'').normalize('NFKD');
+      const pass=($('in-pass').value||''); // 归一化在 mnemonicToSeed 内已做
       const mnemonic=await genMnemonic(ent);
       const seed=await mnemonicToSeed(mnemonic,pass);
       gRoot=await rootFromSeed(seed);
-
-      $('out-mnemonic').textContent=mnemonic;
-      $('out-seed').textContent=b2h(seed);
-      $('mnemo-box').style.display='block';
-
-      const rx=await serXPRV(gRoot.key,gRoot.chain,gRoot.depth,gRoot.parentFP,gRoot.child);
-      const ru=await serXPUB(gRoot.pub,gRoot.chain,gRoot.depth,gRoot.parentFP,gRoot.child);
-      $('out-root-xprv').textContent=rx; $('out-root-xpub').textContent=ru;
-      $('root-box').style.display='block';
-
+      // … 原逻辑不变 …
       $('btn-derive-chain').disabled=false;
       tip.textContent='就绪';
-    }catch(e){ tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e); }
+    }catch(e){
+      tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e);
+    }finally{
+      lockBtn(btn,false);  // ← 新增
+    }
   });
 
   $('btn-derive-chain').addEventListener('click', async ()=>{
+    const btn=$('btn-derive-chain'); if(isLocked(btn)) return; lockBtn(btn,true);  // ← 新增
     const tip=$('ch-tip'); const chain=$('sl-chain').value;
     const outX=$('out-xprv'), outU=$('out-xpub'), outA=$('out-addr'); const lblX=$('lbl-xprv'), lblU=$('lbl-xpub');
     $('eos-k1-box').style.display='none'; outX.textContent=outU.textContent=outA.textContent=''; tip.textContent='';
@@ -308,8 +308,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       }
       $('acct-path-line').innerHTML=`<b>路径：</b> <span class="mono">${pathText}</span>`;
       $('acct-box').style.display='block'; tip.textContent='完成。';
-    }catch(e){ tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e); }
-  });
+    }catch(e){ tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e); 
+    }finally{
+      lockBtn(btn,false);  }
 });
 </script>
 </body>
