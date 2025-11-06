@@ -3,92 +3,73 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>多链账户与地址推导（选择链 → 账户 xprv/xpub + 地址0）</title>
+<title>账户派生演示（多链：ETH / BTC-bc1 / TRON / EOS）</title>
 <style>
-  :root{--bg:#0b1220;--card:#0f1724;--line:#1f2937;--text:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;--good:#10b981;--bad:#ef4444}
+  :root{
+    --bg:#0b1220;--card:#0f1724;--text:#e5e7eb;--muted:#93a3b8;--line:#1e293b;
+    --ok:#10b981;--err:#ef4444;--accent:#60a5fa
+  }
   html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
-  .wrap{max-width:1100px;margin:28px auto;padding:0 16px;overflow-x:hidden}
-  h1{margin:0 0 8px}
+  .wrap{max-width:1100px;margin:32px auto;padding:0 16px}
+  h1{margin:0 0 12px}
   .muted{color:var(--muted)}
-  .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 10px 28px rgba(0,0,0,.35)}
-  .row{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;align-items:center}
-  input,select,button{
-    background:#0c152a;border:1px solid #243250;color:var(--text);
-    border-radius:10px;padding:10px 12px
-  }
-  button{cursor:pointer}
-  button:hover{filter:brightness(1.08)}
-  pre{
-    background:#0a1224;border:1px solid #1d2a44;border-radius:10px;
-    padding:12px;max-width:100%;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;overflow:auto
-  }
+  .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 8px 26px rgba(0,0,0,.35)}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}
+  select,button,input{background:#0c152a;border:1px solid #24324b;color:var(--text);border-radius:10px;padding:10px 12px}
+  button{cursor:pointer} button:hover{filter:brightness(1.08)}
+  .ok{color:var(--ok)} .err{color:var(--err)}
   .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  .ok{color:var(--good)} .err{color:var(--bad)}
-  .pill{display:inline-block;padding:2px 8px;border:1px solid #2a3a60;border-radius:999px;background:#0c152a}
-  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  @media (max-width:900px){ .grid-2{grid-template-columns:1fr} }
+  pre{
+    background:#0a1224;border:1px solid #1d2a44;border-radius:10px;padding:12px;
+    max-width:100%;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;overflow:auto
+  }
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media (max-width:980px){ .grid{grid-template-columns:1fr} }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>多链账户与地址推导（BIP39 → BIP32，纯前端 / WebCrypto）</h1>
-  <div class="muted">选择目标链后，一键生成该链的账户级扩展键与 index 0 地址（或 EOS 公钥）。</div>
+  <h1>选择链并生成账户 + 地址 0</h1>
+  <div class="muted">支持 ETH（m/44'/60'/0'/0）、BTC-bc1（BIP84）、TRON（BIP44 TRX）、EOS（BIP44 EOS）。点击“生成所选链账户 + 地址 0”后展示 xprv/xpub 与示例地址。</div>
 
-  <!-- 词表静默校验失败时才显示 -->
-  <div class="card" id="wl-card" style="display:none">
-    <h3>词表校验</h3>
-    <div class="row"><span id="wl-tip" class="muted"></span></div>
-  </div>
-
+  <!-- 链选择与操作 -->
   <div class="card">
-    <h3>① 生成助记词 & Seed</h3>
     <div class="row">
-      <label>词数：
-        <select id="sl-words">
-          <option value="128">12 词（128-bit）</option>
-          <option value="256">24 词（256-bit）</option>
-        </select>
-      </label>
-      <label>可选 passphrase：
-        <input id="in-pass" placeholder="推荐留空（BIP39 passphrase）"/>
-      </label>
-      <button id="btn-gen" disabled>生成助记词并推导 Seed & Root</button>
-      <span id="mn-tip" class="muted"></span>
-    </div>
-    <div id="mnemo-box" style="display:none">
-      <div class="row"><b>助记词：</b></div>
-      <pre id="out-mnemonic" class="mono"></pre>
-      <div class="row"><b>Seed (64B hex)：</b></div>
-      <pre id="out-seed" class="mono"></pre>
-    </div>
-    <div id="root-box" class="grid-2" style="display:none">
-      <div><div class="row"><b>Root xprv (m)：</b></div><pre id="out-root-xprv" class="mono"></pre></div>
-      <div><div class="row"><b>Root xpub (m)：</b></div><pre id="out-root-xpub" class="mono"></pre></div>
-    </div>
-  </div>
+      <label for="sl-chain"><b>目标链：</b></label>
+      <select id="sl-chain">
+        <option value="ETH">ETH（m/44'/60'/0'/0，EIP-55 地址）</option>
+        <option value="BTC84">BTC bc1（BIP84：zprv/zpub，P2WPKH）</option>
+        <option value="TRON">TRON（m/44'/195'/0'/0，T… 地址）</option>
+        <option value="EOS">EOS（m/44'/194'/0'/0，公钥/地址）</option>
+      </select>
 
-  <div class="card">
-    <h3>② 选择链并生成账户 + 地址 0</h3>
-    <div class="row">
-      <label>目标链：
-        <select id="sl-chain">
-          <option value="BTC">BTC（BIP84，zprv/zpub，地址 bc1q）</option>
-          <option value="ETH">ETH（m/44'/60'/0'/0，EIP-55）</option>
-          <option value="TRX">TRON（m/44'/195'/0'/0，Base58Check）</option>
-          <option value="EOS">EOS（m/44'/194'/0'/0，EOS 公钥）</option>
-        </select>
-      </label>
-      <button id="btn-derive-chain" disabled>生成所选链账户 + 地址 0</button>
-      <span id="ch-tip" class="muted"></span>
+      <button id="btn-gen-acct">生成所选链账户 + 地址 0</button>
+      <span id="acct-tip" class="muted"></span>
     </div>
-    <div id="acct-box" style="display:none">
-      <div class="row" id="acct-path-line"></div>
-      <div class="grid-2">
-        <div><div class="row"><b id="lbl-xprv">账户 xprv：</b></div><pre id="out-xprv" class="mono"></pre></div>
-        <div><div class="row"><b id="lbl-xpub">账户 xpub：</b></div><pre id="out-xpub" class="mono"></pre></div>
+
+    <!-- 派生路径提示 -->
+    <div class="row" id="out-path" class="mono"></div>
+
+    <!-- 账户 xprv/xpub -->
+    <div class="grid">
+      <div>
+        <div class="row"><b id="lbl-xprv">账户 xprv：</b></div>
+        <pre id="out-xprv" class="mono"></pre>
       </div>
-      <div class="row" id="addr-title"></div>
-      <pre id="out-addr" class="mono"></pre>
+      <div>
+        <div class="row"><b id="lbl-xpub">账户 xpub：</b></div>
+        <pre id="out-xpub" class="mono"></pre>
+      </div>
+    </div>
+
+    <!-- 示例地址 / 公钥（通用） -->
+    <div class="row" id="addr-title"><b>示例 /0 地址：</b></div>
+    <pre id="out-addr" class="mono"></pre>
+
+    <!-- 仅 EOS：新增 K1 公钥区块（默认隐藏；脚本中在 EOS 时显示） -->
+    <div id="eos-k1-box" style="display:none">
+      <div class="row"><b>K1 公钥（PUB_K1_…）：</b></div>
+      <pre id="out-eos-k1" class="mono"></pre>
     </div>
   </div>
 </div>
@@ -336,6 +317,13 @@ $('btn-gen').addEventListener('click', async ()=>{
     console.error(e);
   }
 });
+
+// EOS 新格式：PUB_K1_ 公钥
+function eosK1Pub(pubCompressed){
+  // checksum = RIPEMD160( key_data || "K1" )[0:4]
+  const chk = rmd160.ripemd160(concatBytes(pubCompressed, te.encode('K1'))).slice(0,4);
+  return 'PUB_K1_' + base58encode(concatBytes(pubCompressed, chk));
+}
 
 /* 主按钮：按所选链生成账户与地址0 */
 $('btn-derive-chain').addEventListener('click', async ()=>{
