@@ -172,7 +172,7 @@ async function btc_p2wpkh_bech32(pubCompressed){
 }
 
 /* ===== BIP39 ===== */
-let WORDS=null;
+let WORDS = null; // ← 只保留这一处定义
 async function loadWordlistOnce(){
   if(WORDS) return WORDS;
   const res=await fetch('./english.txt');
@@ -295,6 +295,8 @@ async function eosLegacyPub(pubCompressed){
 
 /* ===== 全局状态 ===== */
 let gSeed=null, gRoot=null;
+
+/* 静默加载词表并解锁“生成”按钮 */
 document.addEventListener('DOMContentLoaded', async ()=>{
   try{
     await loadWordlistOnce();
@@ -307,7 +309,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   }
 });
 
-/* ===== 生成助记词 → Seed → Root ===== */
+/* 生成助记词 → Seed → Root */
 $('btn-gen').addEventListener('click', async ()=>{
   const tip=$('mn-tip');
   try{
@@ -335,7 +337,7 @@ $('btn-gen').addEventListener('click', async ()=>{
   }
 });
 
-/* ===== 主按钮：按所选链生成账户与地址0 ===== */
+/* 主按钮：按所选链生成账户与地址0 */
 $('btn-derive-chain').addEventListener('click', async ()=>{
   const chain = $('sl-chain').value;
   const tip = $('ch-tip');
@@ -437,14 +439,7 @@ $('btn-derive-chain').addEventListener('click', async ()=>{
     console.error(e);
   }
 });
-
-/* ===== 静默加载词表 ===== */
-document.addEventListener('DOMContentLoaded', async ()=>{
-  try{ await loadWordlistOnce(); $('btn-gen').disabled=false; }catch{}
-});
-
-/* ===== 词表与助记词函数（依赖上方工具） ===== */
-let WORDS;
 </script>
+
 </body>
 </html>
