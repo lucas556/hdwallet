@@ -1,10 +1,10 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>多链账户与地址推导（BIP39 → BIP32）</title>
-<style>
+ <head> 
+  <meta charset="utf-8" /> 
+  <meta name="viewport" content="width=device-width,initial-scale=1" /> 
+  <title>多链账户与地址推导（BIP39 → BIP32）</title> 
+  <style>
   :root{--bg:#0b1220;--card:#0f1724;--text:#e5e7eb;--muted:#9ca3af;--good:#10b981;--bad:#ef4444}
   html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
   .wrap{max-width:1100px;margin:28px auto;padding:0 16px;overflow-x:hidden}
@@ -19,75 +19,89 @@
   .ok{color:var(--good)} .err{color:var(--bad)}
   .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   @media (max-width:900px){ .grid-2{grid-template-columns:1fr} }
-</style>
-
-</head>
-<body>
-<div class="wrap">
-  <h1>多链账户与地址推导（BIP39 → BIP32，纯 WebCrypto）</h1>
-  <div class="muted">选择目标链后，一键生成该链的账户级扩展键与 index 0 地址（或 EOS 公钥）。</div>
-
-  <!-- 词表校验仅在失败时显示 -->
-  <div class="card" id="wl-card" style="display:none">
-    <h3>词表校验</h3><div class="row"><span id="wl-tip" class="muted"></span></div>
-  </div>
-
-  <div class="card">
-    <h3>① 生成助记词 & Seed</h3>
+</style> 
+ </head> 
+ <body> 
+  <div class="wrap"> 
+   <h1>多链账户与地址推导（BIP39 → BIP32，纯 WebCrypto）</h1> 
+   <div class="muted">
+    选择目标链后，一键生成该链的账户级扩展键与 index 0 地址（或 EOS 公钥）。
+   </div> 
+   <!-- 词表校验仅在失败时显示 --> 
+   <div class="card" id="wl-card" style="display:none"> 
+    <h3>词表校验</h3>
     <div class="row">
-      <label>词数：
-        <select id="sl-words">
-          <option value="128">12 词（128-bit）</option>
-          <option value="256">24 词（256-bit）</option>
-        </select>
-      </label>
-      <label>可选 passphrase：
-        <input id="in-pass" placeholder="推荐留空（BIP39 passphrase）"/>
-      </label>
-      <button id="btn-gen" disabled>生成助记词并推导 Seed & Root</button>
-      <span id="mn-tip" class="muted"></span>
-    </div>
-    <div id="mnemo-box" style="display:none">
-      <div class="row"><b>助记词：</b></div><pre id="out-mnemonic" class="mono"></pre>
-      <div class="row"><b>Seed (64B hex)：</b></div><pre id="out-seed" class="mono"></pre>
-    </div>
-    <div id="root-box" class="grid-2" style="display:none">
-      <div><div class="row"><b>Root xprv (m)：</b></div><pre id="out-root-xprv" class="mono"></pre></div>
-      <div><div class="row"><b>Root xpub (m)：</b></div><pre id="out-root-xpub" class="mono"></pre></div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>② 选择链并生成账户 + 地址 0</h3>
-    <div class="row">
-      <label>目标链：
-        <select id="sl-chain">
-          <option value="BTC">BTC（BIP84，zprv/zpub，地址 bc1q）</option>
-          <option value="ETH">ETH（m/44'/60'/0'/0，EIP-55）</option>
-          <option value="TRX">TRON（m/44'/195'/0'/0，Base58Check）</option>
-          <option value="EOS">EOS（m/44'/194'/0'/0，EOS Legacy + PUB_K1_）</option>
-        </select>
-      </label>
-      <button id="btn-derive-chain" disabled>生成所选链账户 + 地址 0</button>
-      <span id="ch-tip" class="muted"></span>
-    </div>
-
-    <div id="acct-box" style="display:none">
-      <div class="row" id="acct-path-line"></div>
-      <div class="grid-2">
-        <div><div class="row"><b id="lbl-xprv">账户 xprv：</b></div><pre id="out-xprv" class="mono"></pre></div>
-        <div><div class="row"><b id="lbl-xpub">账户 xpub：</b></div><pre id="out-xpub" class="mono"></pre></div>
+     <span id="wl-tip" class="muted"></span>
+    </div> 
+   </div> 
+   <div class="card"> 
+    <h3>① 生成助记词 &amp; Seed</h3> 
+    <div class="row"> 
+     <label>词数： <select id="sl-words"> <option value="128">12 词（128-bit）</option> <option value="256">24 词（256-bit）</option> </select> </label> 
+     <label>可选 passphrase： <input id="in-pass" placeholder="推荐留空（BIP39 passphrase）" /> </label> 
+     <button id="btn-gen" disabled="">生成助记词并推导 Seed &amp; Root</button> 
+     <span id="mn-tip" class="muted"></span> 
+    </div> 
+    <div id="mnemo-box" style="display:none"> 
+     <div class="row">
+      <b>助记词：</b>
+     </div>
+     <pre id="out-mnemonic" class="mono"></pre> 
+     <div class="row">
+      <b>Seed (64B hex)：</b>
+     </div>
+     <pre id="out-seed" class="mono"></pre> 
+    </div> 
+    <div id="root-box" class="grid-2" style="display:none"> 
+     <div>
+      <div class="row">
+       <b>Root xprv (m)：</b>
       </div>
-      <div class="row" id="addr-title"></div><pre id="out-addr" class="mono"></pre>
-      <div id="eos-k1-box" style="display:none;margin-top:8px;">
-        <div class="row"><b>K1 公钥（PUB_K1_…）：</b></div>
-        <pre id="out-eos-k1" class="mono"></pre>
+      <pre id="out-root-xprv" class="mono"></pre>
+     </div> 
+     <div>
+      <div class="row">
+       <b>Root xpub (m)：</b>
       </div>
-    </div>
-  </div>
-</div>
-
-<script type="module">
+      <pre id="out-root-xpub" class="mono"></pre>
+     </div> 
+    </div> 
+   </div> 
+   <div class="card"> 
+    <h3>② 选择链并生成账户 + 地址 0</h3> 
+    <div class="row"> 
+     <label>目标链： <select id="sl-chain"> <option value="BTC">BTC（BIP84，zprv/zpub，地址 bc1q）</option> <option value="ETH">ETH（m/44'/60'/0'/0，EIP-55）</option> <option value="TRX">TRON（m/44'/195'/0'/0，Base58Check）</option> <option value="EOS">EOS（m/44'/194'/0'/0，EOS Legacy + PUB_K1_）</option> </select> </label> 
+     <button id="btn-derive-chain" disabled="">生成所选链账户 + 地址 0</button> 
+     <span id="ch-tip" class="muted"></span> 
+    </div> 
+    <div id="acct-box" style="display:none"> 
+     <div class="row" id="acct-path-line"></div> 
+     <div class="grid-2"> 
+      <div>
+       <div class="row">
+        <b id="lbl-xprv">账户 xprv：</b>
+       </div>
+       <pre id="out-xprv" class="mono"></pre>
+      </div> 
+      <div>
+       <div class="row">
+        <b id="lbl-xpub">账户 xpub：</b>
+       </div>
+       <pre id="out-xpub" class="mono"></pre>
+      </div> 
+     </div> 
+     <div class="row" id="addr-title"></div>
+     <pre id="out-addr" class="mono"></pre> 
+     <div id="eos-k1-box" style="display:none;margin-top:8px;"> 
+      <div class="row">
+       <b>K1 公钥（PUB_K1_…）：</b>
+      </div> 
+      <pre id="out-eos-k1" class="mono"></pre> 
+     </div> 
+    </div> 
+   </div> 
+  </div> 
+  <script type="module">
 /* ── 依赖 ── */
 
 import * as noble from './vendor/noble.bundle.js';
@@ -312,6 +326,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     }finally{
       lockBtn(btn,false);  }
 });
-</script>
-</body>
+});
+</script>  
+ </body>
 </html>
