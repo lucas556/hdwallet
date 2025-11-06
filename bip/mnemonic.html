@@ -70,7 +70,8 @@
         </select>
       </label>
       <label>索引：
-        <input id="in-index" type="number" inputmode="numeric" min="0" step="1" value="0" style="width:110px" onwheel="this.blur()"/>
+        <input id="in-index" type="number" inputmode="numeric" min="0" step="1" value="0"
+               style="width:110px" onwheel="this.blur()" maxlength="10"/>
       </label>
       <button id="btn-derive-chain">生成</button>
       <span id="ch-tip" class="muted"></span>
@@ -95,6 +96,8 @@
 /* ── 依赖 ── */
 import * as noble from './vendor/noble.bundle.js';
 const { secp, keccak_256, rmd160 } = noble;
+// 预计算基点提高 CKDpub 性能
+secp.utils.precompute(8, true);
 
 /* ── 常量配置（统一魔法数） ── */
 const CONFIG = {
@@ -102,15 +105,14 @@ const CONFIG = {
   BTC: {
     HRP: 'bc',
     PURPOSE: 84, COIN: 0, ACCOUNT: 0, CHANGE: 0,
-    SLIP132: {
-      ZPRV: [0x04,0xB2,0x43,0x0C],
-      ZPUB: [0x04,0xB2,0x47,0x46],
-    }
+    SLIP132: { ZPRV: [0x04,0xB2,0x43,0x0C], ZPUB: [0x04,0xB2,0x47,0x46] }
   },
   ETH: { PURPOSE: 44, COIN: 60,  ACCOUNT: 0, CHANGE: 0 },
   TRX: { PURPOSE: 44, COIN: 195, ACCOUNT: 0, CHANGE: 0, PFX: 0x41 },
   EOS: { PURPOSE: 44, COIN: 194, ACCOUNT: 0, CHANGE: 0 },
 };
+Object.freeze(CONFIG);
+Object.values(CONFIG).forEach(v => { if (v && typeof v === 'object') Object.freeze(v); });
 
 /* ── 基础工具 ── */
 const te=new TextEncoder(), td=new TextDecoder();
@@ -124,6 +126,10 @@ async function sha256(u8){return new Uint8Array(await crypto.subtle.digest('SHA-
 async function hash160(u8){return rmd160.ripemd160(await sha256(u8));}
 async function hmac512(key,data){const k=await crypto.subtle.importKey('raw',key,{name:'HMAC',hash:'SHA-512'},false,['sign']);return new Uint8Array(await crypto.subtle.sign('HMAC',k,data));}
 async function pbkdf2_sha512(pwd,salt,iters,dkLen){const k=await crypto.subtle.importKey('raw',pwd,'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-512',salt,iterations:iters},k,dkLen*8);return new Uint8Array(bits);}
+
+/* 状态/错误输出（防 XSS） */
+function setStatus(el, text, css='muted'){ if(!el) return; el.className = css; el.textContent = String(text ?? ''); }
+function setErr(el, text){ setStatus(el, `失败：${text?.message ?? text}`, 'err'); }
 
 /* Base58/Bech32 */
 function b58(data){
@@ -156,17 +162,18 @@ async function btc_p2wpkh(pub){
 let WORDS=null;
 async function loadWords() {
   if (WORDS) return WORDS;
-  const res=await fetch('./english.txt'); const buf=new Uint8Array(await res.arrayBuffer());
+  const res=await fetch('./english.txt', { cache: 'no-store' });
+  const buf=new Uint8Array(await res.arrayBuffer());
   const ok=b2h(await sha256(buf))===CONFIG.WORDLIST_SHA256;
   if(!ok){
     $('wl-card').style.display='block';
-    $('wl-tip').innerHTML='<span class="err">english.txt 校验失败（SHA-256 不匹配）</span>';
+    setStatus($('wl-tip'),'english.txt 校验失败（SHA-256 不匹配）','err');
     throw new Error('wordlist hash mismatch');
   }
   WORDS=td.decode(buf).replace(/\r/g,'').trim().split('\n');
   if (WORDS.length !== 2048) {
     $('wl-card').style.display='block';
-    $('wl-tip').innerHTML='<span class="err">english.txt 词数应为 2048，实际为 '+WORDS.length+'</span>';
+    setStatus($('wl-tip'),`english.txt 词数应为 2048，实际为 ${WORDS.length}`,'err');
     throw new Error('wordlist size mismatch');
   }
   return WORDS;
@@ -233,12 +240,14 @@ async function tronFromPub(pub){const un=secp.Point.fromHex(pub).toRawBytes(fals
 async function eosLegacy(pub){const c=(rmd160.ripemd160(pub)).slice(0,4);return 'EOS'+b58(cat(pub,c));}
 function eosK1(pub){const c=(rmd160.ripemd160(cat(pub,te.encode('K1')))).slice(0,4);return 'PUB_K1_'+b58(cat(pub,c));}
 
-/* 全局 */
+/* 全局与缓存 */
 let gRoot=null;
+const CACHE = { BTC:null, ETH:null, TRX:null, EOS:null };
 
 /* 工具：读取并校验 index（0 <= idx < 2^31） */
 function readIndex(){
   const raw = String(($('in-index')?.value ?? '')).trim();
+  if (raw.length > 10) throw new Error('index 太长');
   const n = Number.parseInt(raw, 10);
   if(!Number.isFinite(n) || n < 0 || n >= 0x80000000){
     alert('索引必须是 0 ~ 2147483647 的整数');
@@ -248,7 +257,20 @@ function readIndex(){
   return n;
 }
 
-/* 清除/锁屏：擦除敏感内存并清空界面 */
+/* 缓存：得到账户层/变更层节点 */
+async function ensurePath(cacheKey, C){
+  if (!CACHE[cacheKey]) {
+    let t = gRoot;
+    t = await ckdPriv(t, C.PURPOSE, true);
+    t = await ckdPriv(t, C.COIN,    true);
+    t = await ckdPriv(t, C.ACCOUNT, true);
+    const change = await ckdPriv(t, C.CHANGE, false);
+    CACHE[cacheKey] = { account: t, change };
+  }
+  return CACHE[cacheKey];
+}
+
+/* 清除/锁屏：擦除敏感内存并清空界面与输入 */
 function wipeSensitive(){
   try{
     if (gRoot) {
@@ -257,28 +279,31 @@ function wipeSensitive(){
     }
   }catch(_){}
   gRoot = null;
-  // 清空展示
+  Object.keys(CACHE).forEach(k => CACHE[k] = null);
+
   ['out-mnemonic','out-seed','out-root-xprv','out-root-xpub',
    'out-xprv','out-xpub','out-addr','out-eos-k1'].forEach(id=>{
      const el=$(id); if(el) el.textContent='';
   });
-  // 折叠卡片 & 提示
   ['mnemo-box','root-box','acct-box','eos-k1-box'].forEach(id=>{
     const el=$(id); if(el) el.style.display='none';
   });
-  $('ch-tip').textContent = '已锁定，需重新生成。';
+  setStatus($('ch-tip'),'已锁定，需重新生成。','muted');
+
+  const passEl = $('in-pass'); if (passEl) passEl.value = '';
+  const idxEl  = $('in-index'); if (idxEl) idxEl.value = '0';
 }
 
 /* 事件绑定 */
 document.addEventListener('DOMContentLoaded', async ()=>{
-  // 防滚轮误改 index（双保险，除 onwheel 外再阻止默认）
+  // 防滚轮误改 index（双保险）
   const idxEl = $('in-index');
   if (idxEl){
     idxEl.addEventListener('wheel', (e)=>{ e.preventDefault(); idxEl.blur(); }, {passive:false});
   }
 
   if (!isSecureContext) {
-    $('mn-tip').innerHTML = '<span class="err">请在 https 或 localhost 下使用（随机数与 WebCrypto 需要安全上下文）。</span>';
+    setStatus($('mn-tip'),'请在 https 或 localhost 下使用（随机数与 WebCrypto 需要安全上下文）。','err');
     $('btn-gen').disabled = true;
   }
   try {
@@ -286,13 +311,13 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     if (isSecureContext) $('btn-gen').disabled=false;
   } catch(e){
     $('btn-gen').disabled = true;
-    $('mn-tip').innerHTML = '<span class="err">词表加载失败（离线/损坏），无法生成助记词。</span>';
+    setStatus($('mn-tip'),'词表加载失败（离线/损坏），无法生成助记词。','err');
     console.error(e);
   }
 
   // 网络状态提示（可选）
-  window.addEventListener('offline', ()=>{$('mn-tip').innerHTML='<span class="err">已离线：若未缓存词表，将无法生成助记词。</span>';});
-  window.addEventListener('online',  ()=>{$('mn-tip').textContent='';});
+  window.addEventListener('offline', ()=>{ setStatus($('mn-tip'),'已离线：若未缓存词表，将无法生成助记词。','err'); });
+  window.addEventListener('online',  ()=>{ setStatus($('mn-tip'),'','muted'); });
 
   // 清除/锁屏按钮
   $('btn-lock').addEventListener('click', ()=> wipeSensitive());
@@ -321,9 +346,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('out-root-xpub').textContent = ru;
       $('root-box').style.display = 'block';
 
-      $('ch-tip').textContent = '就绪';
+      setStatus(tip,'就绪','ok');
     }catch(e){
-      tip.innerHTML = '<span class="err">失败：'+(e?.message||e)+'</span>';
+      setErr(tip, e);
       console.error(e);
     }finally{
       lockBtn(btn,false);
@@ -333,7 +358,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   $('btn-derive-chain').addEventListener('click', async ()=>{
     const btn=$('btn-derive-chain'); if(isLocked(btn)) return;
 
-    // 先检查是否已生成 seed/root；直接弹窗并返回
     if(!gRoot){
       alert('请先执行“① 生成助记词 & Seed”。');
       return;
@@ -345,27 +369,20 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
     $('eos-k1-box').style.display='none';
     outX.textContent=outU.textContent=outA.textContent='';
-    tip.textContent='';
+    setStatus(tip,'','muted');
 
     try{
       const index = readIndex();
-      let n=gRoot, pathText='';
+      let pathText='';
 
       if (chain === 'BTC') {
         const C = CONFIG.BTC;
-        // m/84'/0'/0' 账户
-        n = await ckdPriv(n, C.PURPOSE, true);
-        n = await ckdPriv(n, C.COIN,    true);
-        n = await ckdPriv(n, C.ACCOUNT, true);
+        const { change } = await ensurePath('BTC', C);
 
-        // m/84'/0'/0'/0 作为 BIP32 Extended（zprv/zpub）
-        const change0 = await ckdPriv(n, C.CHANGE, false);
+        const zprv = await serXPRV(change.key, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPRV);
+        const zpub = await serXPUB(change.pub, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPUB);
 
-        const zprv = await serXPRV(change0.key, change0.chain, change0.depth, change0.parentFP, change0.child, C.SLIP132.ZPRV);
-        const zpub = await serXPUB(change0.pub, change0.chain, change0.depth, change0.parentFP, change0.child, C.SLIP132.ZPUB);
-
-        // 地址 m/84'/0'/0'/0/index
-        const aN   = await ckdPub(change0.pub, change0.chain, change0.depth, index);
+        const aN   = await ckdPub(change.pub, change.chain, change.depth, index);
         const addr = await btc_p2wpkh(aN.pub);
 
         pathText = `m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址：/${index} → bech32`;
@@ -378,55 +395,64 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
       } else if (chain === 'ETH') {
         const C = CONFIG.ETH;
-        n=await ckdPriv(n,C.PURPOSE,true); n=await ckdPriv(n,C.COIN,true); n=await ckdPriv(n,C.ACCOUNT,true); n=await ckdPriv(n,C.CHANGE,false);
+        const { change } = await ensurePath('ETH', C);
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
-        const aN = await ckdPub(n.pub,n.chain,n.depth,index);
+
+        const aN = await ckdPub(change.pub, change.chain, change.depth, index);
         const addr = ethFromPub(aN.pub);
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child);
-        outU.textContent=await serXPUB(n.pub,n.chain,n.depth,n.parentFP,n.child);
+        outX.textContent=await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
+        outU.textContent=await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
         $('addr-title').textContent=`地址 ${index}（EIP-55）：`;
         outA.textContent=addr;
 
       } else if (chain === 'TRX') {
         const C = CONFIG.TRX;
-        n=await ckdPriv(n,C.PURPOSE,true); n=await ckdPriv(n,C.COIN,true); n=await ckdPriv(n,C.ACCOUNT,true); n=await ckdPriv(n,C.CHANGE,false);
+        const { change } = await ensurePath('TRX', C);
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
-        const aN = await ckdPub(n.pub,n.chain,n.depth,index);
+
+        const aN = await ckdPub(change.pub, change.chain, change.depth, index);
         const addr = await tronFromPub(aN.pub);
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child);
-        outU.textContent=await serXPUB(n.pub,n.chain,n.depth,n.parentFP,n.child);
+        outX.textContent=await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
+        outU.textContent=await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
         $('addr-title').textContent=`地址 ${index}（TRON）：`;
         outA.textContent=addr;
 
       } else if (chain === 'EOS') {
         const C = CONFIG.EOS;
-        n=await ckdPriv(n,C.PURPOSE,true); n=await ckdPriv(n,C.COIN,true); n=await ckdPriv(n,C.ACCOUNT,true); n=await ckdPriv(n,C.CHANGE,false);
+        const { change } = await ensurePath('EOS', C);
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；公钥 /${index}`;
-        const aN = await ckdPub(n.pub,n.chain,n.depth,index);
+
+        const aN = await ckdPub(change.pub, change.chain, change.depth, index);
         const legacy = await eosLegacy(aN.pub);
         const k1 = eosK1(aN.pub);
 
-        lblX.text内容='BIP32 Extended Private Key：'; // 中文属性可能导致旧浏览器警告，但可正常执行
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child);
-        outU.textContent=await serXPUB(n.pub,n.chain,n.depth,n.parentFP,n.child);
+        outX.textContent=await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
+        outU.textContent=await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
         $('addr-title').textContent=`示例 /${index} 公钥（EOS…）：`;
         outA.textContent=legacy;
         $('eos-k1-box').style.display='block';
         $('out-eos-k1').textContent=k1;
       }
 
-      $('acct-path-line').innerHTML=`<b>路径：</b> <span class="mono">${pathText}</span>`;
-      $('acct-box').style.display='block'; tip.textContent='完成';
+      // 安全的 DOM 构建替代 innerHTML
+      const pathEl = $('acct-path-line');
+      pathEl.replaceChildren();
+      const b = document.createElement('b'); b.textContent = '路径：';
+      const s = document.createElement('span'); s.className = 'mono'; s.textContent = pathText;
+      pathEl.append(b, document.createTextNode(' '), s);
+
+      $('acct-box').style.display='block';
+      setStatus(tip,'完成','ok');
     }catch(e){
-      $('ch-tip').innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>';
+      setErr($('ch-tip'), e);
       console.error(e);
     }finally{
       lockBtn(btn,false);
