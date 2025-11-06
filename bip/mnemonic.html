@@ -79,13 +79,13 @@
      <div class="grid-2"> 
       <div>
        <div class="row">
-        <b id="lbl-xprv">账户 xprv：</b>
+        <b id="lbl-xprv">BIP32 Extended Private Key：</b>
        </div>
        <pre id="out-xprv" class="mono"></pre>
       </div> 
       <div>
        <div class="row">
-        <b id="lbl-xpub">账户 xpub：</b>
+        <b id="lbl-xpub">BIP32 Extended Public Key：</b>
        </div>
        <pre id="out-xpub" class="mono"></pre>
       </div> 
@@ -322,27 +322,27 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
       } else if(chain==='ETH'){ n=await ckdPriv(n,44,true); n=await ckdPriv(n,60,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false); pathText="m/44'/60'/0'/0（账户）；地址 /0";
         const a0=await ckdPub(n.pub,n.chain,n.depth,n.parentFP,0); const addr=ethFromPub(a0.pub);
-        lblX.textContent='账户 xprv：'; lblU.textContent='账户 xpub：';
+        lblX.textContent='BIP32 Extended Private Key：'; lblU.textContent='BIP32 Extended Public Key：';
         outX.textContent=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child);
         outU.textContent=await serXPUB(n.pub,n.chain,n.depth,n.parentFP,n.child);
         $('addr-title').textContent='地址 0（EIP-55）：'; outA.textContent=addr;
       } else if(chain==='TRX'){ n=await ckdPriv(n,44,true); n=await ckdPriv(n,195,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false); pathText="m/44'/195'/0'/0（账户）；地址 /0";
         const a0=await ckdPub(n.pub,n.chain,n.depth,n.parentFP,0); const addr=await tronFromPub(a0.pub);
-        lblX.textContent='账户 xprv：'; lblU.textContent='账户 xpub：';
+        lblX.textContent='BIP32 Extended Private Key：'; lblU.textContent='BIP32 Extended Public Key：';
         outX.textContent=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child);
         outU.textContent=await serXPUB(n.pub,n.chain,n.depth,n.parentFP,n.child);
         $('addr-title').textContent='地址 0（TRON）：'; outA.textContent=addr;
       } else if(chain==='EOS'){ n=await ckdPriv(n,44,true); n=await ckdPriv(n,194,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false); pathText="m/44'/194'/0'/0（账户）；公钥 /0";
         const a0=await ckdPub(n.pub,n.chain,n.depth,n.parentFP,0);
         const legacy=await eosLegacy(a0.pub); const k1=eosK1(a0.pub);
-        lblX.textContent='账户 xprv：'; lblU.textContent='账户 xpub：';
+        lblX.textContent='BIP32 Extended Private Key：'; lblU.textContent='BIP32 Extended Public Key：';
         outX.textContent=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child);
         outU.textContent=await serXPUB(n.pub,n.chain,n.depth,n.parentFP,n.child);
         $('addr-title').textContent='示例 /0 公钥（EOS…）：'; outA.textContent=legacy;
         $('eos-k1-box').style.display='block'; $('out-eos-k1').textContent=k1;
       }
       $('acct-path-line').innerHTML=`<b>路径：</b> <span class="mono">${pathText}</span>`;
-      $('acct-box').style.display='block'; tip.textContent='完成。';
+      $('acct-box').style.display='block'; tip.textContent='完成';
     }catch(e){ tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e); 
     }finally{
       lockBtn(btn,false);  }
