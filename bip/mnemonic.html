@@ -4,6 +4,19 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>多链账户与地址推导（BIP39 → BIP32）</title>
+
+  <!-- 安全相关头（本地/HTTPS 有效；file:// 可能被忽略） -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; connect-src 'self'; img-src 'self' data:; 
+                 script-src 'self'; style-src 'self' 'unsafe-inline';
+                 object-src 'none'; base-uri 'none'; frame-ancestors 'none';
+                 form-action 'self'; upgrade-insecure-requests">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Permissions-Policy"
+        content="geolocation=(), microphone=(), camera=(), payment=(), usb=(), bluetooth=()">
+  <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
+  <meta http-equiv="Cross-Origin-Resource-Policy" content="same-origin">
+
   <style>
     :root{--bg:#0b1220;--card:#0f1724;--text:#e5e7eb;--muted:#9ca3af;--good:#10b981;--bad:#ef4444}
     html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
@@ -19,6 +32,7 @@
     .ok{color:var(--good)} .err{color:var(--bad)}
     .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
     @media (max-width:900px){ .grid-2{grid-template-columns:1fr} }
+    .noselect{user-select:none}
   </style>
 </head>
 <body>
@@ -42,14 +56,15 @@
         </select>
       </label>
       <label>可选 passphrase：
-        <input id="in-pass" type="password" autocomplete="new-password" spellcheck="false" placeholder="推荐留空（BIP39 passphrase）"/>
+        <input id="in-pass" type="password" autocomplete="new-password" autocapitalize="off" autocorrect="off"
+               inputmode="text" spellcheck="false" placeholder="推荐留空（BIP39 passphrase）"/>
       </label>
       <button id="btn-gen" disabled>生成助记词并推导 Seed &amp; Root</button>
       <button id="btn-lock" title="清除敏感数据并锁屏">清除/锁屏</button>
       <span id="mn-tip" class="muted"></span>
     </div>
     <div id="mnemo-box" style="display:none">
-      <div class="row"><b>助记词：</b></div><pre id="out-mnemonic" class="mono"></pre>
+      <div class="row"><b>助记词：</b></div><pre id="out-mnemonic" class="mono noselect"></pre>
       <div class="row"><b>Seed (64B hex)：</b></div><pre id="out-seed" class="mono"></pre>
     </div>
     <div id="root-box" class="grid-2" style="display:none">
@@ -70,10 +85,11 @@
         </select>
       </label>
       <label>索引：
-        <input id="in-index" type="number" inputmode="numeric" min="0" step="1" value="0"
-               style="width:110px" onwheel="this.blur()" maxlength="10"/>
+        <input id="in-index" type="number" inputmode="numeric"
+               min="0" max="2147483647" step="1" value="0"
+               style="width:110px" onwheel="this.blur()" pattern="[0-9]*" autocomplete="off"/>
       </label>
-      <button id="btn-derive-chain">生成</button>
+      <button id="btn-derive-chain" disabled>生成</button>
       <span id="ch-tip" class="muted"></span>
     </div>
 
@@ -96,23 +112,26 @@
 /* ── 依赖 ── */
 import * as noble from './vendor/noble.bundle.js';
 const { secp, keccak_256, rmd160 } = noble;
-// ✅ 只传一个参数；兼容不同版本的 noble
-try { if (secp?.utils?.precompute) secp.utils.precompute(8); } catch(e){ console.warn('precompute skipped:', e); }
+// 仅预热一次（兼容不同 noble 版本）
+let PRECOMP_DONE=false;
+try { if (!PRECOMP_DONE && secp?.utils?.precompute) { secp.utils.precompute(8); PRECOMP_DONE=true; } } catch(e){ console.warn('precompute skipped:', e); }
 
 /* ── 常量配置（统一魔法数） ── */
-const CONFIG = {
+const CONFIG = Object.freeze({
   WORDLIST_SHA256: '2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda',
-  BTC: {
+  BIP32: Object.freeze({
+    XPRV: [0x04,0x88,0xAD,0xE4],
+    XPUB: [0x04,0x88,0xB2,0x1E],
+  }),
+  BTC: Object.freeze({
     HRP: 'bc',
     PURPOSE: 84, COIN: 0, ACCOUNT: 0, CHANGE: 0,
-    SLIP132: { ZPRV: [0x04,0xB2,0x43,0x0C], ZPUB: [0x04,0xB2,0x47,0x46] }
-  },
-  ETH: { PURPOSE: 44, COIN: 60,  ACCOUNT: 0, CHANGE: 0 },
-  TRX: { PURPOSE: 44, COIN: 195, ACCOUNT: 0, CHANGE: 0, PFX: 0x41 },
-  EOS: { PURPOSE: 44, COIN: 194, ACCOUNT: 0, CHANGE: 0 },
-};
-Object.freeze(CONFIG);
-Object.values(CONFIG).forEach(v => { if (v && typeof v === 'object') Object.freeze(v); });
+    SLIP132: Object.freeze({ ZPRV: [0x04,0xB2,0x43,0x0C], ZPUB: [0x04,0xB2,0x47,0x46] })
+  }),
+  ETH: Object.freeze({ PURPOSE: 44, COIN: 60,  ACCOUNT: 0, CHANGE: 0 }),
+  TRX: Object.freeze({ PURPOSE: 44, COIN: 195, ACCOUNT: 0, CHANGE: 0, PFX: 0x41 }),
+  EOS: Object.freeze({ PURPOSE: 44, COIN: 194, ACCOUNT: 0, CHANGE: 0 }),
+});
 
 /* ── 基础工具 ── */
 const te=new TextEncoder(), td=new TextDecoder();
@@ -205,6 +224,10 @@ async function rootFromSeed(seed){
   const k = bytesToBig(IL); if(k===0n||k>=curveN) throw new Error('invalid master');
   const pub=secp.getPublicKey(IL,true); return {key:IL,chain:IR,pub,depth:0,child:0,parentFP:new Uint8Array(4)};
 }
+async function safeRootFromSeed(seed){
+  try { return await rootFromSeed(seed); }
+  catch { return await rootFromSeed(seed); } // 极小概率再试一次
+}
 async function ckdPriv(n,i,hard){
   const idx = hard ? (i|0x80000000) : i;
   const data= hard ? cat(new Uint8Array([0]), n.key, ser32(idx))
@@ -226,8 +249,8 @@ async function ckdPub(pub, chain, depth, i){
   const fp = (await hash160(pub)).slice(0,4); // 父指纹来自父公钥
   return { pub: child, chain: I.slice(32), depth: depth+1, parentFP: fp, child: i };
 }
-async function serXPRV(key,chain,depth,fp,child,ver=[0x04,0x88,0xAD,0xE4]){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,new Uint8Array([0]),key));}
-async function serXPUB(pub,chain,depth,fp,child,ver=[0x04,0x88,0xB2,0x1E]){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,pub));}
+async function serXPRV(key,chain,depth,fp,child,ver=CONFIG.BIP32.XPRV){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,new Uint8Array([0]),key));}
+async function serXPUB(pub,chain,depth,fp,child,ver=CONFIG.BIP32.XPUB){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,pub));}
 
 function lockBtn(btn, on){ if(!btn) return; btn.disabled = !!on; btn.dataset.lock = on ? '1' : '0'; }
 function isLocked(btn){ return btn?.dataset.lock === '1'; }
@@ -242,22 +265,24 @@ function eosK1(pub){const c=(rmd160.ripemd160(cat(pub,te.encode('K1')))).slice(0
 
 /* 全局与缓存 */
 let gRoot=null;
-const CACHE = { BTC:null, ETH:null, TRX:null, EOS:null };
+// 为每条链缓存 account/change 以及序列化好的 xprv/xpub
+const CACHE = {
+  BTC: null, ETH: null, TRX: null, EOS: null
+};
 
 /* 工具：读取并校验 index（0 <= idx < 2^31） */
 function readIndex(){
-  const raw = String(($('in-index')?.value ?? '')).trim();
-  if (raw.length > 10) throw new Error('index 太长');
-  const n = Number.parseInt(raw, 10);
-  if(!Number.isFinite(n) || n < 0 || n >= 0x80000000){
+  const el=$('in-index');
+  const n = el.valueAsNumber;
+  if(!Number.isFinite(n) || n < 0 || n > 2147483647){
     alert('索引必须是 0 ~ 2147483647 的整数');
-    $('in-index')?.focus();
+    el?.focus();
     throw new Error('invalid index');
   }
-  return n;
+  return n|0;
 }
 
-/* 缓存：得到账户层/变更层节点 */
+/* 缓存：得到账户层/变更层节点（以及序列化字符串懒加载） */
 async function ensurePath(cacheKey, C){
   if (!CACHE[cacheKey]) {
     let t = gRoot;
@@ -265,7 +290,7 @@ async function ensurePath(cacheKey, C){
     t = await ckdPriv(t, C.COIN,    true);
     t = await ckdPriv(t, C.ACCOUNT, true);
     const change = await ckdPriv(t, C.CHANGE, false);
-    CACHE[cacheKey] = { account: t, change };
+    CACHE[cacheKey] = { account: t, change, sxprv: null, sxpub: null };
   }
   return CACHE[cacheKey];
 }
@@ -292,6 +317,9 @@ function wipeSensitive(){
 
   const passEl = $('in-pass'); if (passEl) passEl.value = '';
   const idxEl  = $('in-index'); if (idxEl) idxEl.value = '0';
+
+  // 派生按钮回到禁用
+  $('btn-derive-chain').disabled = true;
 }
 
 /* 事件绑定 */
@@ -306,11 +334,13 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     setStatus($('mn-tip'),'请在 https 或 localhost 下使用（随机数与 WebCrypto 需要安全上下文）。','err');
     $('btn-gen').disabled = true;
   }
+
   try {
     await loadWords();
     if (isSecureContext) $('btn-gen').disabled=false;
   } catch(e){
     $('btn-gen').disabled = true;
+    $('btn-derive-chain').disabled = true;
     setStatus($('mn-tip'),'词表加载失败（离线/损坏），无法生成助记词。','err');
     console.error(e);
   }
@@ -322,22 +352,32 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   // 清除/锁屏按钮
   $('btn-lock').addEventListener('click', ()=> wipeSensitive());
 
-  // 页面隐藏/卸载时清理
+  // 页面隐藏/卸载/关闭时清理
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) wipeSensitive(); });
   window.addEventListener('pagehide', ()=> wipeSensitive());
+  window.addEventListener('beforeunload', ()=> wipeSensitive());
 
   $('btn-gen').addEventListener('click', async ()=>{
     const btn=$('btn-gen'); if(isLocked(btn)) return; lockBtn(btn,true);
     const tip=$('mn-tip');
     try{
+      setStatus(tip,'正在计算…','muted');
+      // 让出一帧，先把禁用/提示渲染出来
+      await new Promise(r=>requestAnimationFrame(r));
+
       const ent = parseInt(($('sl-words').value||'128'),10);
       const pass = ($('in-pass').value || '');
       const mnemonic = await genMnemonic(ent);
       const seed     = await mnemonicToSeed(mnemonic, pass);
-      gRoot          = await rootFromSeed(seed);
+      const root     = await safeRootFromSeed(seed);
+      gRoot          = root;
+
+      // 尽力清理 seed 的明文（JS 内存无法真正保证）
+      try{ seed.fill(0); }catch(_){}
 
       $('out-mnemonic').textContent = mnemonic;
-      $('out-seed').textContent     = b2h(seed);
+      $('out-seed').textContent     = b2h(root.key) ? b2h(await hmac512(new Uint8Array(0), new Uint8Array(0))) && b2h(seed) : b2h(seed); // 占位避免闪烁
+      $('out-seed').textContent     = b2h(seed); // 真实显示
       $('mnemo-box').style.display  = 'block';
 
       const rx = await serXPRV(gRoot.key, gRoot.chain, gRoot.depth, gRoot.parentFP, gRoot.child);
@@ -345,6 +385,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('out-root-xprv').textContent = rx;
       $('out-root-xpub').textContent = ru;
       $('root-box').style.display = 'block';
+
+      // 启用派生按钮
+      $('btn-derive-chain').disabled = false;
 
       setStatus(tip,'就绪','ok');
     }catch(e){
@@ -379,8 +422,11 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         const C = CONFIG.BTC;
         const { change } = await ensurePath('BTC', C);
 
-        const zprv = await serXPRV(change.key, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPRV);
-        const zpub = await serXPUB(change.pub, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPUB);
+        // 懒加载并缓存序列化
+        if (!CACHE.BTC.sxprv) {
+          CACHE.BTC.sxprv = await serXPRV(change.key, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPRV);
+          CACHE.BTC.sxpub = await serXPUB(change.pub, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPUB);
+        }
 
         const aN   = await ckdPub(change.pub, change.chain, change.depth, index);
         const addr = await btc_p2wpkh(aN.pub);
@@ -388,8 +434,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         pathText = `m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址：/${index} → bech32`;
         lblX.textContent = 'BIP32 Extended Private Key（zprv）：';
         lblU.textContent = 'BIP32 Extended Public Key（zpub）：';
-        outX.textContent = zprv;
-        outU.textContent = zpub;
+        outX.textContent = CACHE.BTC.sxprv;
+        outU.textContent = CACHE.BTC.sxpub;
         $('addr-title').textContent = `地址 ${index}（bc1q）：`;
         outA.textContent = addr;
 
@@ -398,13 +444,18 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         const { change } = await ensurePath('ETH', C);
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
 
+        if (!CACHE.ETH.sxprv) {
+          CACHE.ETH.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPRV);
+          CACHE.ETH.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPUB);
+        }
+
         const aN = await ckdPub(change.pub, change.chain, change.depth, index);
         const addr = ethFromPub(aN.pub);
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
-        outU.textContent=await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
+        outX.textContent=CACHE.ETH.sxprv;
+        outU.textContent=CACHE.ETH.sxpub;
         $('addr-title').textContent=`地址 ${index}（EIP-55）：`;
         outA.textContent=addr;
 
@@ -413,13 +464,18 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         const { change } = await ensurePath('TRX', C);
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
 
+        if (!CACHE.TRX.sxprv) {
+          CACHE.TRX.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPRV);
+          CACHE.TRX.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPUB);
+        }
+
         const aN = await ckdPub(change.pub, change.chain, change.depth, index);
         const addr = await tronFromPub(aN.pub);
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
-        outU.textContent=await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
+        outX.textContent=CACHE.TRX.sxprv;
+        outU.textContent=CACHE.TRX.sxpub;
         $('addr-title').textContent=`地址 ${index}（TRON）：`;
         outA.textContent=addr;
 
@@ -428,14 +484,19 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         const { change } = await ensurePath('EOS', C);
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；公钥 /${index}`;
 
+        if (!CACHE.EOS.sxprv) {
+          CACHE.EOS.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPRV);
+          CACHE.EOS.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPUB);
+        }
+
         const aN = await ckdPub(change.pub, change.chain, change.depth, index);
         const legacy = await eosLegacy(aN.pub);
         const k1 = eosK1(aN.pub);
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
-        outU.textContent=await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
+        outX.textContent=CACHE.EOS.sxprv;
+        outU.textContent=CACHE.EOS.sxpub;
         $('addr-title').textContent=`示例 /${index} 公钥（EOS…）：`;
         outA.textContent=legacy;
         $('eos-k1-box').style.display='block';
