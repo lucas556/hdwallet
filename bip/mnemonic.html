@@ -114,7 +114,7 @@ const WORDLIST_SHA256='2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3
 const curveN=secp.CURVE.n;
 
 const b2h=u8=>Array.from(u8).map(x=>x.toString(16).padStart(2,'0')).join('');
-const h2b=hex=>new Uint8Array(hex.replace(/^0x/,'').match(/.{1,2}/g).map(x=>parseInt(x,16)));
+
 const cat=(...arrs)=>{let len=0;for(const a of arrs)len+=a.length;const out=new Uint8Array(len);let o=0;for(const a of arrs){out.set(a,o);o+=a.length;}return out;}
 const ser32=i=>new Uint8Array([i>>>24,i>>>16,i>>>8,i&255]);
 async function sha256(u8){return new Uint8Array(await crypto.subtle.digest('SHA-256',u8));}
@@ -134,7 +134,12 @@ function b58(data){
   return out.length ? out.reverse().join('') : '1';
 }
 
-async function b58check(payload){const d=await sha256(await sha256(payload));return b58(cat(payload,d.slice(0,4)));}
+async function b58check(payload){
+  const d1 = await sha256(payload);
+  const d2 = await sha256(d1);
+  return b58(cat(payload, d2.slice(0,4)));
+}
+
 const BCH='qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 function b32_polymod(v){const G=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3];let c=1;for(const x of v){const b=c>>25;c=(c&0x1ffffff)<<5^x;for(let i=0;i<5;i++)if((b>>i)&1)c^=G[i];}return c>>>0;}
 function b32_hrp(h){const a=[];for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)>>5);a.push(0);for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)&31);return a;}
@@ -173,10 +178,9 @@ async function mnemonicToSeed(mn, pass) {
   const mnN = normMnemonicString(mn);
   const pwN = normNFKD(pass);
   return pbkdf2_sha512(
-    new TextEncoder().encode(mnN),
-    new TextEncoder().encode('mnemonic' + pwN),
-    2048,
-    64
+    te.encode(mnN),
+    te.encode('mnemonic' + pwN),
+    2048, 64
   );
 }
 
@@ -187,14 +191,14 @@ const bigToBytes = (n, len=32)=>{ const o=new Uint8Array(len); for(let i=len-1;i
 /* BIP32 */
 async function rootFromSeed(seed){
   const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(32);
-  const k=BigInt('0x'+b2h(IL)); if(k===0n||k>=curveN) throw new Error('invalid master');
+  const k = bytesToBig(IL); if(k===0n||k>=curveN) throw new Error('invalid master');
   const pub=secp.getPublicKey(IL,true); return {key:IL,chain:IR,pub,depth:0,child:0,parentFP:new Uint8Array(4)};
 }
 
 async function ckdPriv(n,i,hard){
   const idx = hard ? (i|0x80000000) : i;
   const data= hard ? cat(new Uint8Array([0]), n.key, ser32(idx))
-                   : cat(secp.getPublicKey(n.key,true), ser32(idx));
+                   : cat(n.pub, ser32(idx));
 
   const I  = await hmac512(n.chain, data);
   const IL = I.slice(0,32), IR = I.slice(32);
@@ -244,7 +248,8 @@ let gRoot=null;
 /* 事件绑定：确保元素存在后再绑定，避免 null 报错 */
 document.addEventListener('DOMContentLoaded', async ()=>{
   if (!isSecureContext) {
-    console.warn('警告：非安全上下文，WebCrypto 可能不可用。请使用 https 或 localhost。');
+    $('mn-tip').innerHTML = '<span class="err">请在 https 或 localhost 下使用（随机数与 WebCrypto 需要安全上下文）。</span>';
+    $('btn-gen').disabled = true;
   }
   try { await loadWords(); $('btn-gen').disabled=false; } catch(e){ /* 提示已在 loadWords 里处理 */ }
 
