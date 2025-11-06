@@ -3,118 +3,6 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>ETH (m/44'/60'/0'/0) xprv/xpub & 地址 推导演示（纯前端）</title>
-<style>
-  :root{--bg:#0b1220;--card:#0f1724;--line:#1f2937;--text:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;--good:#10b981;--bad:#ef4444}
-  html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
-  .wrap{max-width:980px;margin:32px auto;padding:0 16px;overflow-x:hidden}
-  h1{margin:0 0 12px}
-  .card{background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:14px;padding:18px;margin:14px 0;box-shadow:0 10px 28px rgba(0,0,0,.35)}
-  .row{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0;align-items:center}
-  .muted{color:var(--muted)}
-  label{user-select:none}
-  input,select,button,textarea{
-    background:#0c152a;border:1px solid #243250;color:var(--text);
-    border-radius:10px;padding:10px 12px
-  }
-  button{cursor:pointer}
-  button:hover{filter:brightness(1.08)}
-  pre{
-    background:#0a1224;border:1px solid #1d2a44;border-radius:10px;
-    padding:12px;max-width:100%;white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;overflow:auto
-  }
-  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-  .ok{color:var(--good)} .err{color:var(--bad)}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-  @media (max-width:1000px){ .grid{grid-template-columns:1fr} }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <h1>ETH (m/44'/60'/0'/0) xprv/xpub & 地址 推导（BIP39 → BIP32，纯 WebCrypto）</h1>
-  <div class="muted">步骤：助记词 → Seed → BIP32 Root (m) → m/44'/60'/0'/0 的 xprv/xpub → 从 xpub 派生地址 0（EIP-55）。</div>
-
-  <!-- 词表静默校验状态（后台进行；仅失败时才提示） -->
-  <div class="card" id="wl-card" style="display:none">
-    <h3>1) 词表校验</h3>
-    <div class="row">
-      <span id="wl-tip" class="muted"></span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>2) 生成助记词</h3>
-    <div class="row">
-      <label>词数：
-        <select id="sl-words">
-          <option value="128">12 词（128-bit ENT）</option>
-          <option value="256">24 词（256-bit ENT）</option>
-        </select>
-      </label>
-      <label>可选 passphrase：
-        <input id="in-pass" placeholder="推荐留空（BIP39 passphrase）"/>
-      </label>
-      <button id="btn-gen" disabled>生成助记词并推导 Seed</button>
-      <span id="mn-tip" class="muted"></span>
-    </div>
-    <div id="mnemo-box" style="display:none">
-      <div class="row"><b>助记词：</b></div>
-      <pre id="out-mnemonic" class="mono"></pre>
-      <div class="row"><b>Seed (64 字节十六进制)：</b></div>
-      <pre id="out-seed" class="mono"></pre>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>3) BIP32 Root (m)</h3>
-    <div id="root-box" style="display:none">
-      <div class="grid">
-        <div>
-          <div class="row"><b>Root xprv (m)：</b></div>
-          <pre id="out-root-xprv" class="mono"></pre>
-        </div>
-        <div>
-          <div class="row"><b>Root xpub (m)：</b></div>
-          <pre id="out-root-xpub" class="mono"></pre>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>4) 派生到 m/44'/60'/0'/0 并从 xpub 派生地址</h3>
-    <div class="row">
-      <button id="btn-derive" disabled>推导 m/44'/60'/0'/0 的 xprv/xpub</button>
-      <span id="drv-tip" class="muted"></span>
-    </div>
-    <div id="path-box" style="display:none">
-      <div class="row"><b>路径：</b> <span class="mono">m/44'/60'/0'/0</span></div>
-      <div class="grid">
-        <div>
-          <div class="row"><b>Account xprv：</b></div>
-          <pre id="out-path-xprv" class="mono"></pre>
-        </div>
-        <div>
-          <div class="row"><b>Account xpub：</b></div>
-          <pre id="out-path-xpub" class="mono"></pre>
-        </div>
-      </div>
-
-      <!-- 这里是你之前缺失的 UI：从 xpub 派生地址 0 -->
-      <div class="row" style="margin-top:12px">
-        <button id="btn-addr0" disabled>从 xpub 派生地址 0（ETH EIP-55）</button>
-      </div>
-      <pre id="out-addr0" class="mono"></pre>
-    </div>
-  </div>
-
-</div>
-
-<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>多链 xprv/xpub & 地址推导（BIP39 → BIP32，纯前端）</title>
 <style>
   :root{--bg:#0b1220;--card:#0f1724;--line:#1f2937;--text:#e5e7eb;--muted:#9ca3af;--accent:#60a5fa;--good:#10b981;--bad:#ef4444}
@@ -654,6 +542,5 @@ $('btn-eos-pub0').addEventListener('click', async ()=>{
   }
 });
 </script>
-  
 </body>
 </html>
