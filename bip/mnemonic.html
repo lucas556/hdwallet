@@ -128,7 +128,8 @@ function b32_polymod(v){const G=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2
 function b32_hrp(h){const a=[];for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)>>5);a.push(0);for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)&31);return a;}
 function b32_convert(data,from,to,pad=true){let acc=0,bits=0,ret=[],maxv=(1<<to)-1,maxAcc=(1<<(from+to-1))-1;for(const v of data){if(v<0||(v>>from))return null;acc=((acc<<from)|v)&maxAcc;bits+=from;while(bits>=to){bits-=to;ret.push((acc>>bits)&maxv);}}if(pad){if(bits)ret.push((acc<<(to-bits))&maxv);}else if(bits>=from||((acc<<(to-bits))&maxv))return null;return ret;}
 function b32_encode(hrp,data){const chk=b32_polymod(b32_hrp(hrp).concat(data).concat([0,0,0,0,0,0]))^1;const cs=[];for(let p=0;p<6;p++)cs.push((chk>>5*(5-p))&31);const all=data.concat(cs);return hrp+'1'+all.map(x=>BCH[x]).join('');}
-async function btc_p2wpkh(pub){const h160=await hash160(pub);const data=[0].concat(b32_convert([...h160],8,5,true));return b32_encode('bc',data);}
+async function btc_p2wpkh(pub){const h160=await hash160(pub);const conv = b32_convert([...h160],8,5,true);if (!conv) throw new Error('bech32 convert failed');const data=[0].concat(conv);return b32_encode('bc',data);}
+
 
 /* BIP39 */
 let WORDS=null;
@@ -181,7 +182,7 @@ async function ckdPriv(n,i,hard){
   const fp  = (await hash160(n.pub)).slice(0,4);
   return { key, chain: IR, pub, depth: n.depth+1, child: idx, parentFP: fp };
 }
-async function ckdPub(pub, chain, depth, parentFP, i){
+async function ckdPub(pub, chain, depth, i){
   const I  = await hmac512(chain, cat(pub, ser32(i)));
   const il = bytesToBig(I.slice(0,32));
   if (il >= curveN) throw new Error('invalid IL');
@@ -294,7 +295,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         const zpub = await serXPUB(change0.pub, change0.chain, change0.depth, change0.parentFP, change0.child, ZPUB);
 
         // 地址 m/84'/0'/0'/0/index
-        const aN   = await ckdPub(change0.pub, change0.chain, change0.depth, change0.parentFP, index);
+        const aN   = await ckdPub(change0.pub, change0.chain, change0.depth, index);
         const addr = await btc_p2wpkh(aN.pub);
 
         pathText = `m/84'/0'/0'/0；地址：/${index} → bech32`;
@@ -308,7 +309,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       } else if (chain === 'ETH') {
         n=await ckdPriv(n,44,true); n=await ckdPriv(n,60,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false);
         pathText=`m/44'/60'/0'/0；地址 /${index}`;
-        const aN = await ckdPub(n.pub,n.chain,n.depth,n.parentFP,index);
+        const aN = await ckdPub(n.pub,n.chain,n.depth,index);
         const addr = ethFromPub(aN.pub);
 
         lblX.textContent='BIP32 Extended Private Key：';
@@ -321,7 +322,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       } else if (chain === 'TRX') {
         n=await ckdPriv(n,44,true); n=await ckdPriv(n,195,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false);
         pathText=`m/44'/195'/0'/0；地址 /${index}`;
-        const aN = await ckdPub(n.pub,n.chain,n.depth,n.parentFP,index);
+        const aN = await ckdPub(n.pub,n.chain,n.depth,index);
         const addr = await tronFromPub(aN.pub);
 
         lblX.textContent='BIP32 Extended Private Key：';
@@ -334,7 +335,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       } else if (chain === 'EOS') {
         n=await ckdPriv(n,44,true); n=await ckdPriv(n,194,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false);
         pathText=`m/44'/194'/0'/0；公钥 /${index}`;
-        const aN = await ckdPub(n.pub,n.chain,n.depth,n.parentFP,index);
+        const aN = await ckdPub(n.pub,n.chain,n.depth,index);
         const legacy = await eosLegacy(aN.pub);
         const k1 = eosK1(aN.pub);
 
