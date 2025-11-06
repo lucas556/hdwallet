@@ -45,6 +45,7 @@
         <input id="in-pass" type="password" autocomplete="new-password" spellcheck="false" placeholder="推荐留空（BIP39 passphrase）"/>
       </label>
       <button id="btn-gen" disabled>生成助记词并推导 Seed &amp; Root</button>
+      <button id="btn-lock" title="清除敏感数据并锁屏">清除/锁屏</button>
       <span id="mn-tip" class="muted"></span>
     </div>
     <div id="mnemo-box" style="display:none">
@@ -69,7 +70,7 @@
         </select>
       </label>
       <label>索引：
-        <input id="in-index" type="number" inputmode="numeric" min="0" step="1" value="0" style="width:110px"/>
+        <input id="in-index" type="number" inputmode="numeric" min="0" step="1" value="0" style="width:110px" onwheel="this.blur()"/>
       </label>
       <button id="btn-derive-chain">生成</button>
       <span id="ch-tip" class="muted"></span>
@@ -95,10 +96,25 @@
 import * as noble from './vendor/noble.bundle.js';
 const { secp, keccak_256, rmd160 } = noble;
 
+/* ── 常量配置（统一魔法数） ── */
+const CONFIG = {
+  WORDLIST_SHA256: '2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda',
+  BTC: {
+    HRP: 'bc',
+    PURPOSE: 84, COIN: 0, ACCOUNT: 0, CHANGE: 0,
+    SLIP132: {
+      ZPRV: [0x04,0xB2,0x43,0x0C],
+      ZPUB: [0x04,0xB2,0x47,0x46],
+    }
+  },
+  ETH: { PURPOSE: 44, COIN: 60,  ACCOUNT: 0, CHANGE: 0 },
+  TRX: { PURPOSE: 44, COIN: 195, ACCOUNT: 0, CHANGE: 0, PFX: 0x41 },
+  EOS: { PURPOSE: 44, COIN: 194, ACCOUNT: 0, CHANGE: 0 },
+};
+
 /* ── 基础工具 ── */
 const te=new TextEncoder(), td=new TextDecoder();
 const $=id=>document.getElementById(id);
-const WORDLIST_SHA256='2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda';
 const curveN=secp.CURVE.n;
 
 const b2h=u8=>Array.from(u8).map(x=>x.toString(16).padStart(2,'0')).join('');
@@ -128,18 +144,31 @@ function b32_polymod(v){const G=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2
 function b32_hrp(h){const a=[];for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)>>5);a.push(0);for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)&31);return a;}
 function b32_convert(data,from,to,pad=true){let acc=0,bits=0,ret=[],maxv=(1<<to)-1,maxAcc=(1<<(from+to-1))-1;for(const v of data){if(v<0||(v>>from))return null;acc=((acc<<from)|v)&maxAcc;bits+=from;while(bits>=to){bits-=to;ret.push((acc>>bits)&maxv);}}if(pad){if(bits)ret.push((acc<<(to-bits))&maxv);}else if(bits>=from||((acc<<(to-bits))&maxv))return null;return ret;}
 function b32_encode(hrp,data){const chk=b32_polymod(b32_hrp(hrp).concat(data).concat([0,0,0,0,0,0]))^1;const cs=[];for(let p=0;p<6;p++)cs.push((chk>>5*(5-p))&31);const all=data.concat(cs);return hrp+'1'+all.map(x=>BCH[x]).join('');}
-async function btc_p2wpkh(pub){const h160=await hash160(pub);const conv = b32_convert([...h160],8,5,true);if (!conv) throw new Error('bech32 convert failed');const data=[0].concat(conv);return b32_encode('bc',data);}
-
+async function btc_p2wpkh(pub){
+  const h160=await hash160(pub);
+  const conv = b32_convert([...h160],8,5,true);
+  if (!conv) throw new Error('bech32 convert failed');
+  const data=[0].concat(conv);
+  return b32_encode(CONFIG.BTC.HRP, data);
+}
 
 /* BIP39 */
 let WORDS=null;
 async function loadWords() {
   if (WORDS) return WORDS;
   const res=await fetch('./english.txt'); const buf=new Uint8Array(await res.arrayBuffer());
-  const ok=b2h(await sha256(buf))===WORDLIST_SHA256;
-  if(!ok){$('wl-card').style.display='block';$('wl-tip').innerHTML='<span class="err">english.txt 校验失败（SHA-256 不匹配）</span>';throw new Error('wordlist hash mismatch');}
+  const ok=b2h(await sha256(buf))===CONFIG.WORDLIST_SHA256;
+  if(!ok){
+    $('wl-card').style.display='block';
+    $('wl-tip').innerHTML='<span class="err">english.txt 校验失败（SHA-256 不匹配）</span>';
+    throw new Error('wordlist hash mismatch');
+  }
   WORDS=td.decode(buf).replace(/\r/g,'').trim().split('\n');
-  if (WORDS.length !== 2048) { $('wl-card').style.display='block'; $('wl-tip').innerHTML='<span class="err">english.txt 词数应为 2048，实际为 '+WORDS.length+'</span>'; throw new Error('wordlist size mismatch'); }
+  if (WORDS.length !== 2048) {
+    $('wl-card').style.display='block';
+    $('wl-tip').innerHTML='<span class="err">english.txt 词数应为 2048，实际为 '+WORDS.length+'</span>';
+    throw new Error('wordlist size mismatch');
+  }
   return WORDS;
 }
 const bytes2bits=u8=>{const out=[];for(const b of u8)for(let i=7;i>=0;i--)out.push((b>>i)&1);return out;}
@@ -200,7 +229,7 @@ function isLocked(btn){ return btn?.dataset.lock === '1'; }
 function ethFromPub(pub){const un=secp.Point.fromHex(pub).toRawBytes(false).slice(1); const h=keccak_256(un).slice(12);
   const lower=b2h(h).toLowerCase(); const hh=b2h(keccak_256(te.encode(lower))); let out='0x';
   for(let i=0;i<lower.length;i++) out+=(parseInt(hh[i],16)>=8)?lower[i].toUpperCase():lower[i]; return out;}
-async function tronFromPub(pub){const un=secp.Point.fromHex(pub).toRawBytes(false).slice(1);const a=keccak_256(un).slice(12);return b58check(cat(new Uint8Array([0x41]),a));}
+async function tronFromPub(pub){const un=secp.Point.fromHex(pub).toRawBytes(false).slice(1);const a=keccak_256(un).slice(12);return b58check(cat(new Uint8Array([CONFIG.TRX.PFX]),a));}
 async function eosLegacy(pub){const c=(rmd160.ripemd160(pub)).slice(0,4);return 'EOS'+b58(cat(pub,c));}
 function eosK1(pub){const c=(rmd160.ripemd160(cat(pub,te.encode('K1')))).slice(0,4);return 'PUB_K1_'+b58(cat(pub,c));}
 
@@ -219,8 +248,35 @@ function readIndex(){
   return n;
 }
 
+/* 清除/锁屏：擦除敏感内存并清空界面 */
+function wipeSensitive(){
+  try{
+    if (gRoot) {
+      if (gRoot.key?.fill)   gRoot.key.fill(0);
+      if (gRoot.chain?.fill) gRoot.chain.fill(0);
+    }
+  }catch(_){}
+  gRoot = null;
+  // 清空展示
+  ['out-mnemonic','out-seed','out-root-xprv','out-root-xpub',
+   'out-xprv','out-xpub','out-addr','out-eos-k1'].forEach(id=>{
+     const el=$(id); if(el) el.textContent='';
+  });
+  // 折叠卡片 & 提示
+  ['mnemo-box','root-box','acct-box','eos-k1-box'].forEach(id=>{
+    const el=$(id); if(el) el.style.display='none';
+  });
+  $('ch-tip').textContent = '已锁定，需重新生成。';
+}
+
 /* 事件绑定 */
 document.addEventListener('DOMContentLoaded', async ()=>{
+  // 防滚轮误改 index（双保险，除 onwheel 外再阻止默认）
+  const idxEl = $('in-index');
+  if (idxEl){
+    idxEl.addEventListener('wheel', (e)=>{ e.preventDefault(); idxEl.blur(); }, {passive:false});
+  }
+
   if (!isSecureContext) {
     $('mn-tip').innerHTML = '<span class="err">请在 https 或 localhost 下使用（随机数与 WebCrypto 需要安全上下文）。</span>';
     $('btn-gen').disabled = true;
@@ -228,7 +284,22 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   try {
     await loadWords();
     if (isSecureContext) $('btn-gen').disabled=false;
-  } catch(e){ /* 提示已在 loadWords 里处理 */ }
+  } catch(e){
+    $('btn-gen').disabled = true;
+    $('mn-tip').innerHTML = '<span class="err">词表加载失败（离线/损坏），无法生成助记词。</span>';
+    console.error(e);
+  }
+
+  // 网络状态提示（可选）
+  window.addEventListener('offline', ()=>{$('mn-tip').innerHTML='<span class="err">已离线：若未缓存词表，将无法生成助记词。</span>';});
+  window.addEventListener('online',  ()=>{$('mn-tip').textContent='';});
+
+  // 清除/锁屏按钮
+  $('btn-lock').addEventListener('click', ()=> wipeSensitive());
+
+  // 页面隐藏/卸载时清理
+  document.addEventListener('visibilitychange', ()=>{ if (document.hidden) wipeSensitive(); });
+  window.addEventListener('pagehide', ()=> wipeSensitive());
 
   $('btn-gen').addEventListener('click', async ()=>{
     const btn=$('btn-gen'); if(isLocked(btn)) return; lockBtn(btn,true);
@@ -262,7 +333,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   $('btn-derive-chain').addEventListener('click', async ()=>{
     const btn=$('btn-derive-chain'); if(isLocked(btn)) return;
 
-    // ✅ 先检查是否已生成 seed/root；直接弹窗并返回
+    // 先检查是否已生成 seed/root；直接弹窗并返回
     if(!gRoot){
       alert('请先执行“① 生成助记词 & Seed”。');
       return;
@@ -281,24 +352,23 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       let n=gRoot, pathText='';
 
       if (chain === 'BTC') {
+        const C = CONFIG.BTC;
         // m/84'/0'/0' 账户
-        n = await ckdPriv(n, 84, true);
-        n = await ckdPriv(n, 0,  true);
-        n = await ckdPriv(n, 0,  true);
+        n = await ckdPriv(n, C.PURPOSE, true);
+        n = await ckdPriv(n, C.COIN,    true);
+        n = await ckdPriv(n, C.ACCOUNT, true);
 
         // m/84'/0'/0'/0 作为 BIP32 Extended（zprv/zpub）
-        const change0 = await ckdPriv(n, 0, false);
+        const change0 = await ckdPriv(n, C.CHANGE, false);
 
-        // SLIP-132 版本号
-        const ZPRV = [0x04,0xB2,0x43,0x0C], ZPUB = [0x04,0xB2,0x47,0x46];
-        const zprv = await serXPRV(change0.key, change0.chain, change0.depth, change0.parentFP, change0.child, ZPRV);
-        const zpub = await serXPUB(change0.pub, change0.chain, change0.depth, change0.parentFP, change0.child, ZPUB);
+        const zprv = await serXPRV(change0.key, change0.chain, change0.depth, change0.parentFP, change0.child, C.SLIP132.ZPRV);
+        const zpub = await serXPUB(change0.pub, change0.chain, change0.depth, change0.parentFP, change0.child, C.SLIP132.ZPUB);
 
         // 地址 m/84'/0'/0'/0/index
         const aN   = await ckdPub(change0.pub, change0.chain, change0.depth, index);
         const addr = await btc_p2wpkh(aN.pub);
 
-        pathText = `m/84'/0'/0'/0；地址：/${index} → bech32`;
+        pathText = `m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址：/${index} → bech32`;
         lblX.textContent = 'BIP32 Extended Private Key（zprv）：';
         lblU.textContent = 'BIP32 Extended Public Key（zpub）：';
         outX.textContent = zprv;
@@ -307,8 +377,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         outA.textContent = addr;
 
       } else if (chain === 'ETH') {
-        n=await ckdPriv(n,44,true); n=await ckdPriv(n,60,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false);
-        pathText=`m/44'/60'/0'/0；地址 /${index}`;
+        const C = CONFIG.ETH;
+        n=await ckdPriv(n,C.PURPOSE,true); n=await ckdPriv(n,C.COIN,true); n=await ckdPriv(n,C.ACCOUNT,true); n=await ckdPriv(n,C.CHANGE,false);
+        pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
         const aN = await ckdPub(n.pub,n.chain,n.depth,index);
         const addr = ethFromPub(aN.pub);
 
@@ -320,8 +391,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         outA.textContent=addr;
 
       } else if (chain === 'TRX') {
-        n=await ckdPriv(n,44,true); n=await ckdPriv(n,195,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false);
-        pathText=`m/44'/195'/0'/0；地址 /${index}`;
+        const C = CONFIG.TRX;
+        n=await ckdPriv(n,C.PURPOSE,true); n=await ckdPriv(n,C.COIN,true); n=await ckdPriv(n,C.ACCOUNT,true); n=await ckdPriv(n,C.CHANGE,false);
+        pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
         const aN = await ckdPub(n.pub,n.chain,n.depth,index);
         const addr = await tronFromPub(aN.pub);
 
@@ -333,12 +405,14 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         outA.textContent=addr;
 
       } else if (chain === 'EOS') {
-        n=await ckdPriv(n,44,true); n=await ckdPriv(n,194,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false);
-        pathText=`m/44'/194'/0'/0；公钥 /${index}`;
+        const C = CONFIG.EOS;
+        n=await ckdPriv(n,C.PURPOSE,true); n=await ckdPriv(n,C.COIN,true); n=await ckdPriv(n,C.ACCOUNT,true); n=await ckdPriv(n,C.CHANGE,false);
+        pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；公钥 /${index}`;
         const aN = await ckdPub(n.pub,n.chain,n.depth,index);
         const legacy = await eosLegacy(aN.pub);
         const k1 = eosK1(aN.pub);
 
+        lblX.text内容='BIP32 Extended Private Key：'; // 中文属性可能导致旧浏览器警告，但可正常执行
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
         outX.textContent=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child);
@@ -352,7 +426,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('acct-path-line').innerHTML=`<b>路径：</b> <span class="mono">${pathText}</span>`;
       $('acct-box').style.display='block'; tip.textContent='完成';
     }catch(e){
-      tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e);
+      $('ch-tip').innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>';
+      console.error(e);
     }finally{
       lockBtn(btn,false);
     }
