@@ -38,7 +38,7 @@
     <h3>① 生成助记词 &amp; Seed</h3> 
     <div class="row"> 
      <label>词数： <select id="sl-words"> <option value="128">12 词（128-bit）</option> <option value="256">24 词（256-bit）</option> </select> </label> 
-     <label>可选 passphrase： <input id="in-pass" placeholder="推荐留空（BIP39 passphrase）" /> </label> 
+     <label>可选 passphrase： <input id="in-pass" type="password" autocomplete="new-password" spellcheck="false" placeholder="推荐留空（BIP39 passphrase）"/> </label> 
      <button id="btn-gen" disabled="">生成助记词并推导 Seed &amp; Root</button> 
      <span id="mn-tip" class="muted"></span> 
     </div> 
@@ -243,24 +243,40 @@ let gRoot=null;
 
 /* 事件绑定：确保元素存在后再绑定，避免 null 报错 */
 document.addEventListener('DOMContentLoaded', async ()=>{
+  if (!isSecureContext) {
+    console.warn('警告：非安全上下文，WebCrypto 可能不可用。请使用 https 或 localhost。');
+  }
   try { await loadWords(); $('btn-gen').disabled=false; } catch(e){ /* 提示已在 loadWords 里处理 */ }
 
   $('btn-gen').addEventListener('click', async ()=>{
-    const btn=$('btn-gen'); if(isLocked(btn)) return; lockBtn(btn,true);   // ← 新增
+    const btn=$('btn-gen'); if(isLocked(btn)) return; lockBtn(btn,true);
     const tip=$('mn-tip');
     try{
-      const ent=parseInt(($('sl-words').value||'128'),10);
-      const pass=($('in-pass').value||''); // 归一化在 mnemonicToSeed 内已做
-      const mnemonic=await genMnemonic(ent);
-      const seed=await mnemonicToSeed(mnemonic,pass);
-      gRoot=await rootFromSeed(seed);
-      // … 原逻辑不变 …
-      $('btn-derive-chain').disabled=false;
-      tip.textContent='就绪';
+      const ent = parseInt(($('sl-words').value||'128'),10);
+      const pass = ($('in-pass').value || ''); // NFKD 在 mnemonicToSeed 内做
+      const mnemonic = await genMnemonic(ent);
+      const seed     = await mnemonicToSeed(mnemonic, pass);
+      gRoot          = await rootFromSeed(seed);
+
+      // ✅ 显示助记词与 Seed
+      $('out-mnemonic').textContent = mnemonic;
+      $('out-seed').textContent     = b2h(seed);
+      $('mnemo-box').style.display  = 'block';
+
+      // ✅ 显示 Root xprv/xpub
+      const rx = await serXPRV(gRoot.key,  gRoot.chain, gRoot.depth, gRoot.parentFP, gRoot.child);
+      const ru = await serXPUB(gRoot.pub,  gRoot.chain, gRoot.depth, gRoot.parentFP, gRoot.child);
+      $('out-root-xprv').textContent = rx;
+      $('out-root-xpub').textContent = ru;
+      $('root-box').style.display = 'block';
+
+      $('btn-derive-chain').disabled = false;
+      tip.textContent = '就绪';
     }catch(e){
-      tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e);
+      tip.innerHTML = '<span class="err">失败：'+(e?.message||e)+'</span>';
+      console.error(e);
     }finally{
-      lockBtn(btn,false);  // ← 新增
+      lockBtn(btn,false);
     }
   });
 
