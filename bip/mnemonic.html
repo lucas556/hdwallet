@@ -109,7 +109,17 @@ async function hmac512(key,data){const k=await crypto.subtle.importKey('raw',key
 async function pbkdf2_sha512(pwd,salt,iters,dkLen){const k=await crypto.subtle.importKey('raw',pwd,'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-512',salt,iterations:iters},k,dkLen*8);return new Uint8Array(bits);}
 
 /* Base58/Bech32 */
-function b58(data){const A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';let x=BigInt('0x'+b2h(data)),s='';while(x>0n){s=A[Number(x%58n)]+s;x/=58n;}for(let i=0;i<data.length&&data[i]===0;i++)s='1'+s;return s||'1';}
+function b58(data){
+  const A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  // 直接把字节累计成 BigInt（避免 b2h → BigInt('0x…')）
+  let x = data.reduce((n,b)=> (n<<8n) + BigInt(b), 0n);
+  const out = [];
+  while(x>0n){ out.push(A[Number(x%58n)]); x/=58n; }
+  // 处理前导 0
+  for(let i=0;i<data.length && data[i]===0;i++) out.push('1');
+  return out.length ? out.reverse().join('') : '1';
+}
+
 async function b58check(payload){const d=await sha256(await sha256(payload));return b58(cat(payload,d.slice(0,4)));}
 const BCH='qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 function b32_polymod(v){const G=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3];let c=1;for(const x of v){const b=c>>25;c=(c&0x1ffffff)<<5^x;for(let i=0;i<5;i++)if((b>>i)&1)c^=G[i];}return c>>>0;}
@@ -155,25 +165,51 @@ async function mnemonicToSeed(mn, pass) {
     64
   );
 }
+
+// 放在 BIP32 之前
+const bytesToBig = (u)=> u.reduce((n,b)=>(n<<8n)+BigInt(b), 0n);
+const bigToBytes = (n, len=32)=>{ const o=new Uint8Array(len); for(let i=len-1;i>=0;i--){ o[i]=Number(n&255n); n>>=8n; } return o; };
+
 /* BIP32 */
 async function rootFromSeed(seed){
   const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(32);
   const k=BigInt('0x'+b2h(IL)); if(k===0n||k>=curveN) throw new Error('invalid master');
   const pub=secp.getPublicKey(IL,true); return {key:IL,chain:IR,pub,depth:0,child:0,parentFP:new Uint8Array(4)};
 }
+
 async function ckdPriv(n,i,hard){
-  const idx=hard?(i|0x80000000):i; const data=hard ? cat(new Uint8Array([0]),n.key,ser32(idx)) : cat(secp.getPublicKey(n.key,true),ser32(idx));
-  const I=await hmac512(n.chain,data); const IL=I.slice(0,32),IR=I.slice(32);
-  const ki=(BigInt('0x'+b2h(IL))+BigInt('0x'+b2h(n.key)))%curveN; if(ki===0n) throw new Error('invalid child');
-  const key=h2b(ki.toString(16).padStart(64,'0')); const pub=secp.getPublicKey(key,true);
-  const fp=(await hash160(n.pub)).slice(0,4);
-  return {key,chain:IR,pub,depth:n.depth+1,child:idx,parentFP:fp};
+  const idx = hard ? (i|0x80000000) : i;
+  const data= hard ? cat(new Uint8Array([0]), n.key, ser32(idx))
+                   : cat(secp.getPublicKey(n.key,true), ser32(idx));
+
+  const I  = await hmac512(n.chain, data);
+  const IL = I.slice(0,32), IR = I.slice(32);
+
+  const ki = (bytesToBig(IL) + bytesToBig(n.key)) % curveN;
+  if (ki === 0n) throw new Error('invalid child');
+
+  const key = bigToBytes(ki, 32);
+  const pub = secp.getPublicKey(key, true);
+  const fp  = (await hash160(n.pub)).slice(0,4);  // 父指纹
+
+  return { key, chain: IR, pub, depth: n.depth+1, child: idx, parentFP: fp };
 }
-async function ckdPub(pub,chain,depth,parentFP,i){
-  const I=await hmac512(chain,cat(pub,ser32(i))); const il=BigInt('0x'+b2h(I.slice(0,32))); if(il>=curveN) throw new Error('invalid IL');
-  const child=secp.Point.fromHex(pub).add(secp.Point.BASE.multiply(il)).toRawBytes(true);
-  return {pub:child,chain:I.slice(32),depth:depth+1,parentFP,child:i};
+
+async function ckdPub(pub, chain, depth, parentFP, i){
+  const I  = await hmac512(chain, cat(pub, ser32(i)));
+  const il = bytesToBig(I.slice(0,32));
+  if (il >= curveN) throw new Error('invalid IL');
+
+  const child = secp.Point.fromHex(pub)
+                .add(secp.Point.BASE.multiply(il))
+                .toRawBytes(true);
+
+  // 正确的父指纹应来自“父节点公钥”
+  const fp = (await hash160(pub)).slice(0,4);
+
+  return { pub: child, chain: I.slice(32), depth: depth+1, parentFP: fp, child: i };
 }
+  
 async function serXPRV(key,chain,depth,fp,child,ver=[0x04,0x88,0xAD,0xE4]){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,new Uint8Array([0]),key));}
 async function serXPUB(pub,chain,depth,fp,child,ver=[0x04,0x88,0xB2,0x1E]){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,pub));}
 
