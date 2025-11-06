@@ -192,7 +192,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('root-box').style.display='block';
 
       $('btn-derive-chain').disabled=false;
-      tip.textContent='就绪。';
+      tip.textContent='就绪';
     }catch(e){ tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e); }
   });
 
@@ -203,15 +203,33 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     try{
       if(!gRoot) throw new Error('请先生成 Seed/Root');
       let n=gRoot, pathText='';
-      if(chain==='BTC'){ n=await ckdPriv(n,84,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,true); pathText="m/84'/0'/0'（账户）；地址 /0/0";
-        const ZPRV=[0x04,0xB2,0x43,0x0C], ZPUB=[0x04,0xB2,0x47,0x46];
-        const zprv=await serXPRV(n.key,n.chain,n.depth,n.parentFP,n.child,ZPRV);
-        const zpub=await serXPUB(n.pub,n.chain,n.depth,n.parentFP,n.child,ZPUB);
-        const c0=await ckdPub(n.pub,n.chain,n.depth,n.parentFP,0);
-        const a0=await ckdPub(c0.pub,c0.chain,c0.depth,c0.parentFP,0);
-        const addr=await btc_p2wpkh(a0.pub);
-        lblX.textContent='账户 zprv：'; lblU.textContent='账户 zpub：';
-        outX.textContent=zprv; outU.textContent=zpub; $('addr-title').textContent='地址 0（bc1q）：'; outA.textContent=addr;
+      if (chain === 'BTC') {
+        // m/84'/0'/0' 账户
+        n = await ckdPriv(n, 84, true);
+        n = await ckdPriv(n, 0,  true);
+        n = await ckdPriv(n, 0,  true);
+
+        // m/84'/0'/0'/0 作为 BIP32 Extended（zprv/zpub）
+        const change0 = await ckdPriv(n, 0, false);
+
+        // SLIP-132 版本号
+        const ZPRV = [0x04,0xB2,0x43,0x0C], ZPUB = [0x04,0xB2,0x47,0x46];
+        const zprv = await serXPRV(change0.key, change0.chain, change0.depth, change0.parentFP, change0.child, ZPRV);
+        const zpub = await serXPUB(change0.pub, change0.chain, change0.depth, change0.parentFP, change0.child, ZPUB);
+
+        // 地址 m/84'/0'/0'/0/0
+        const a0   = await ckdPub(change0.pub, change0.chain, change0.depth, change0.parentFP, 0);
+        const addr = await btc_p2wpkh(a0.pub);
+
+        // 统一用 pathText 在通用位置渲染，不要单独 set 再被覆盖
+        pathText = `m/84'/0'/0'/0（BIP32 Extended）；地址：/0 → bech32`;
+        lblX.textContent = 'BIP32 Extended Private Key（zprv）：';
+        lblU.textContent = 'BIP32 Extended Public Key（zpub）：';
+        outX.textContent = zprv;
+        outU.textContent = zpub;
+        $('addr-title').textContent = '地址 0（bc1q）：';
+        outA.textContent = addr;
+
       } else if(chain==='ETH'){ n=await ckdPriv(n,44,true); n=await ckdPriv(n,60,true); n=await ckdPriv(n,0,true); n=await ckdPriv(n,0,false); pathText="m/44'/60'/0'/0（账户）；地址 /0";
         const a0=await ckdPub(n.pub,n.chain,n.depth,n.parentFP,0); const addr=ethFromPub(a0.pub);
         lblX.textContent='账户 xprv：'; lblU.textContent='账户 xpub：';
