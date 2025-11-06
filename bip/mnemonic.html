@@ -135,8 +135,26 @@ async function genMnemonic(entBits=128){
   const cs=bytes2bits(await sha256(ent)).slice(0,CS);
   return bits2idx(bytes2bits(ent).concat(cs),11).map(i=>WORDS[i]).join(' ');
 }
-async function mnemonicToSeed(mn, pass){return pbkdf2_sha512(te.encode(mn), te.encode('mnemonic'+(pass||'')), 2048, 64);}
+// 辅助：统一做 NFKD，并把空白规整为单空格（避免粘贴时混入奇怪空白）
+function normNFKD(s) {
+  return (s ?? '').normalize('NFKD');
+}
+function normMnemonicString(s) {
+  // BIP-39 规范要求按空格分词；规整多空白为单空格更稳妥
+  return normNFKD(String(s).trim().replace(/\s+/g, ' '));
+}
 
+// 修复后的 BIP-39：对“助记词 + passphrase”都做 NFKD 再 PBKDF2
+async function mnemonicToSeed(mn, pass) {
+  const mnN = normMnemonicString(mn);
+  const pwN = normNFKD(pass);
+  return pbkdf2_sha512(
+    new TextEncoder().encode(mnN),
+    new TextEncoder().encode('mnemonic' + pwN),
+    2048,
+    64
+  );
+}
 /* BIP32 */
 async function rootFromSeed(seed){
   const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(32);
