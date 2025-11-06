@@ -4,18 +4,6 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>多链账户与地址推导（BIP39 → BIP32）</title>
-<meta http-equiv="Content-Security-Policy" content="
-default-src 'self';
-script-src 'self' https://esm.run https://esm.sh;
-connect-src 'self';
-img-src 'self';
-style-src 'self' 'unsafe-inline';
-object-src 'none';
-frame-ancestors 'none';
-base-uri 'none';
-form-action 'none';
-referrer 'no-referrer';
-">
 <style>
   :root{--bg:#0b1220;--card:#0f1724;--text:#e5e7eb;--muted:#9ca3af;--good:#10b981;--bad:#ef4444}
   html,body{background:var(--bg);color:var(--text);margin:0;font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,PingFang SC,Microsoft YaHei,sans-serif}
@@ -53,7 +41,7 @@ referrer 'no-referrer';
         </select>
       </label>
       <label>可选 passphrase：
-        <input id="in-pass" type="password" autocomplete="new-password" spellcheck="false" placeholder="推荐留空（BIP39 passphrase）"/>
+        <input id="in-pass" placeholder="推荐留空（BIP39 passphrase）"/>
       </label>
       <button id="btn-gen" disabled>生成助记词并推导 Seed & Root</button>
       <span id="mn-tip" class="muted"></span>
@@ -96,15 +84,6 @@ referrer 'no-referrer';
       </div>
     </div>
   </div>
-
-  <div class="card">
-    <h3>③ 开发自测</h3>
-    <div class="row">
-      <button id="btn-selftest">运行自测向量</button>
-      <span class="muted">验证 ckdPriv/ckdPub 一致性 & PBKDF2 形态 & P2WPKH 格式</span>
-    </div>
-    <pre id="selftest-log" class="mono"></pre>
-  </div>
 </div>
 
 <script type="module">
@@ -119,15 +98,8 @@ const $=id=>document.getElementById(id);
 const WORDLIST_SHA256='2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda';
 const curveN=secp.CURVE.n;
 
-// 显示用十六进制
 const b2h=u8=>Array.from(u8).map(x=>x.toString(16).padStart(2,'0')).join('');
 const h2b=hex=>new Uint8Array(hex.replace(/^0x/,'').match(/.{1,2}/g).map(x=>parseInt(x,16)));
-
-// BigInt/Uint8 直接转换（去掉 hex 中转）
-const bytesToBig = (u)=> u.reduce((n,b)=>(n<<8n)+BigInt(b), 0n);
-const bigToN     = (n, len=32)=>{ const o=new Uint8Array(len); for(let i=len-1;i>=0;i--){ o[i]=Number(n&255n); n>>=8n; } return o; };
-
-// 其他小工具
 const cat=(...arrs)=>{let len=0;for(const a of arrs)len+=a.length;const out=new Uint8Array(len);let o=0;for(const a of arrs){out.set(a,o);o+=a.length;}return out;}
 const ser32=i=>new Uint8Array([i>>>24,i>>>16,i>>>8,i&255]);
 async function sha256(u8){return new Uint8Array(await crypto.subtle.digest('SHA-256',u8));}
@@ -135,18 +107,9 @@ async function hash160(u8){return rmd160.ripemd160(await sha256(u8));}
 async function hmac512(key,data){const k=await crypto.subtle.importKey('raw',key,{name:'HMAC',hash:'SHA-512'},false,['sign']);return new Uint8Array(await crypto.subtle.sign('HMAC',k,data));}
 async function pbkdf2_sha512(pwd,salt,iters,dkLen){const k=await crypto.subtle.importKey('raw',pwd,'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-512',salt,iterations:iters},k,dkLen*8);return new Uint8Array(bits);}
 
-/* Base58（优化：不做字符串头插，先 push 再反转） */
-function b58(data){
-  const A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  let x = data.reduce((n,b)=>(n<<8n)+BigInt(b),0n);
-  const out=[];
-  while(x>0n){ out.push(A[Number(x%58n)]); x/=58n; }
-  for(let i=0;i<data.length && data[i]===0;i++) out.push('1');
-  return out.length ? out.reverse().join('') : '1';
-}
+/* Base58/Bech32 */
+function b58(data){const A='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';let x=BigInt('0x'+b2h(data)),s='';while(x>0n){s=A[Number(x%58n)]+s;x/=58n;}for(let i=0;i<data.length&&data[i]===0;i++)s='1'+s;return s||'1';}
 async function b58check(payload){const d=await sha256(await sha256(payload));return b58(cat(payload,d.slice(0,4)));}
-
-/* Bech32（保持原实现） */
 const BCH='qpzry9x8gf2tvdw0s3jn54khce6mua7l';
 function b32_polymod(v){const G=[0x3b6a57b2,0x26508e6d,0x1ea119fa,0x3d4233dd,0x2a1462b3];let c=1;for(const x of v){const b=c>>25;c=(c&0x1ffffff)<<5^x;for(let i=0;i<5;i++)if((b>>i)&1)c^=G[i];}return c>>>0;}
 function b32_hrp(h){const a=[];for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)>>5);a.push(0);for(let i=0;i<h.length;i++)a.push(h.charCodeAt(i)&31);return a;}
@@ -171,32 +134,24 @@ async function genMnemonic(entBits=128){
   const cs=bytes2bits(await sha256(ent)).slice(0,CS);
   return bits2idx(bytes2bits(ent).concat(cs),11).map(i=>WORDS[i]).join(' ');
 }
-// 修正：对助记词也做 NFKD 规范化
-async function mnemonicToSeed(mn, pass){
-  mn   = (mn || '').normalize('NFKD');
-  pass = (pass || '').normalize('NFKD');
-  return pbkdf2_sha512(te.encode(mn), te.encode('mnemonic'+pass), 2048, 64);
-}
+async function mnemonicToSeed(mn, pass){return pbkdf2_sha512(te.encode(mn), te.encode('mnemonic'+(pass||'')), 2048, 64);}
 
 /* BIP32 */
 async function rootFromSeed(seed){
   const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(32);
-  const k=bytesToBig(IL); if(k===0n||k>=curveN) throw new Error('invalid master');
-  const pub=secp.getPublicKey(IL,true); return {key:IL,chain:IR,pub,depth:0,child:0,parentFP=new Uint8Array(4)};
+  const k=BigInt('0x'+b2h(IL)); if(k===0n||k>=curveN) throw new Error('invalid master');
+  const pub=secp.getPublicKey(IL,true); return {key:IL,chain:IR,pub,depth:0,child:0,parentFP:new Uint8Array(4)};
 }
 async function ckdPriv(n,i,hard){
-  const idx=hard?(i|0x80000000):i;
-  const data=hard ? cat(new Uint8Array([0]),n.key,ser32(idx))
-                  : cat(secp.getPublicKey(n.key,true),ser32(idx));
+  const idx=hard?(i|0x80000000):i; const data=hard ? cat(new Uint8Array([0]),n.key,ser32(idx)) : cat(secp.getPublicKey(n.key,true),ser32(idx));
   const I=await hmac512(n.chain,data); const IL=I.slice(0,32),IR=I.slice(32);
-  const ki=(bytesToBig(IL)+bytesToBig(n.key))%curveN; if(ki===0n) throw new Error('invalid child');
-  const key=bigToN(ki,32); const pub=secp.getPublicKey(key,true);
+  const ki=(BigInt('0x'+b2h(IL))+BigInt('0x'+b2h(n.key)))%curveN; if(ki===0n) throw new Error('invalid child');
+  const key=h2b(ki.toString(16).padStart(64,'0')); const pub=secp.getPublicKey(key,true);
   const fp=(await hash160(n.pub)).slice(0,4);
   return {key,chain:IR,pub,depth:n.depth+1,child:idx,parentFP:fp};
 }
 async function ckdPub(pub,chain,depth,parentFP,i){
-  const I=await hmac512(chain,cat(pub,ser32(i)));
-  const il=bytesToBig(I.slice(0,32)); if(il>=curveN) throw new Error('invalid IL');
+  const I=await hmac512(chain,cat(pub,ser32(i))); const il=BigInt('0x'+b2h(I.slice(0,32))); if(il>=curveN) throw new Error('invalid IL');
   const child=secp.Point.fromHex(pub).add(secp.Point.BASE.multiply(il)).toRawBytes(true);
   return {pub:child,chain:I.slice(32),depth:depth+1,parentFP,child:i};
 }
@@ -214,30 +169,15 @@ function eosK1(pub){const c=(rmd160.ripemd160(cat(pub,te.encode('K1')))).slice(0
 /* 全局 */
 let gRoot=null;
 
-/* 防抖/并发锁 */
-function lockBtn(btn, on){ if(!btn) return; btn.disabled=!!on; btn.dataset.lock = on?'1':'0'; }
-function isLocked(btn){ return btn?.dataset.lock==='1'; }
-
-/* 自测工具 */
-function logSelfTest(msg, ok=true){
-  const el=$('selftest-log');
-  el.innerHTML += (ok? '✅ ':'❌ ') + msg + '\n';
-}
-function clearSelfTest(){ $('selftest-log').textContent=''; }
-
-/* 事件绑定 */
+/* 事件绑定：确保元素存在后再绑定，避免 null 报错 */
 document.addEventListener('DOMContentLoaded', async ()=>{
-  if (!isSecureContext) {
-    console.warn('非安全上下文，WebCrypto/PBKDF2 可能不可用。建议使用 https 或本地调试服务器。');
-  }
   try { await loadWords(); $('btn-gen').disabled=false; } catch(e){ /* 提示已在 loadWords 里处理 */ }
 
   $('btn-gen').addEventListener('click', async ()=>{
-    const btn=$('btn-gen'); if(isLocked(btn)) return; lockBtn(btn,true);
     const tip=$('mn-tip');
     try{
       const ent=parseInt(($('sl-words').value||'128'),10);
-      const pass=($('in-pass').value||''); // NFKD 在 mnemonicToSeed 内做
+      const pass=($('in-pass').value||'').normalize('NFKD');
       const mnemonic=await genMnemonic(ent);
       const seed=await mnemonicToSeed(mnemonic,pass);
       gRoot=await rootFromSeed(seed);
@@ -254,11 +194,9 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('btn-derive-chain').disabled=false;
       tip.textContent='就绪';
     }catch(e){ tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e); }
-    finally{ lockBtn(btn,false); }
   });
 
   $('btn-derive-chain').addEventListener('click', async ()=>{
-    const btn=$('btn-derive-chain'); if(isLocked(btn)) return; lockBtn(btn,true);
     const tip=$('ch-tip'); const chain=$('sl-chain').value;
     const outX=$('out-xprv'), outU=$('out-xpub'), outA=$('out-addr'); const lblX=$('lbl-xprv'), lblU=$('lbl-xpub');
     $('eos-k1-box').style.display='none'; outX.textContent=outU.textContent=outA.textContent=''; tip.textContent='';
@@ -266,20 +204,24 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       if(!gRoot) throw new Error('请先生成 Seed/Root');
       let n=gRoot, pathText='';
       if (chain === 'BTC') {
-        // 保持你原有逻辑：zprv/zpub 在 m/84'/0'/0'/0（不调整层级）
+        // m/84'/0'/0' 账户
         n = await ckdPriv(n, 84, true);
         n = await ckdPriv(n, 0,  true);
         n = await ckdPriv(n, 0,  true);
 
+        // m/84'/0'/0'/0 作为 BIP32 Extended（zprv/zpub）
         const change0 = await ckdPriv(n, 0, false);
 
+        // SLIP-132 版本号
         const ZPRV = [0x04,0xB2,0x43,0x0C], ZPUB = [0x04,0xB2,0x47,0x46];
         const zprv = await serXPRV(change0.key, change0.chain, change0.depth, change0.parentFP, change0.child, ZPRV);
         const zpub = await serXPUB(change0.pub, change0.chain, change0.depth, change0.parentFP, change0.child, ZPUB);
 
+        // 地址 m/84'/0'/0'/0/0
         const a0   = await ckdPub(change0.pub, change0.chain, change0.depth, change0.parentFP, 0);
         const addr = await btc_p2wpkh(a0.pub);
 
+        // 统一用 pathText 在通用位置渲染，不要单独 set 再被覆盖
         pathText = `m/84'/0'/0'/0（BIP32 Extended）；地址：/0 → bech32`;
         lblX.textContent = 'BIP32 Extended Private Key（zprv）：';
         lblU.textContent = 'BIP32 Extended Public Key（zpub）：';
@@ -312,39 +254,6 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('acct-path-line').innerHTML=`<b>路径：</b> <span class="mono">${pathText}</span>`;
       $('acct-box').style.display='block'; tip.textContent='完成。';
     }catch(e){ tip.innerHTML='<span class="err">失败：'+(e?.message||e)+'</span>'; console.error(e); }
-    finally{ lockBtn(btn,false); }
-  });
-
-  $('btn-selftest').addEventListener('click', async ()=>{
-    const btn=$('btn-selftest'); if(isLocked(btn)) return; lockBtn(btn,true);
-    clearSelfTest();
-    try{
-      // Test 1: BIP32 pub/priv 一致性（使用固定 BIP32 种子）
-      const seed = h2b('000102030405060708090a0b0c0d0e0f');
-      const root = await rootFromSeed(seed);
-      const chPr = await ckdPriv(root, 0, false);
-      const chPu = await ckdPub(root.pub, root.chain, root.depth, root.parentFP, 0);
-      logSelfTest('BIP32: ckdPriv 与 ckdPub 的公钥一致性 = ' + (b2h(chPr.pub)===b2h(chPu.pub)), b2h(chPr.pub)===b2h(chPu.pub));
-
-      // Test 2: PBKDF2 形态（固定助记词/空 passphrase，长度与非零校验）
-      const seed2 = await mnemonicToSeed('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about','');
-      const nonZero = seed2.some(b=>b!==0);
-      logSelfTest('PBKDF2: 长度为 64 字节 = ' + (seed2.length===64), seed2.length===64);
-      logSelfTest('PBKDF2: 非全零输出 = ' + nonZero, nonZero);
-
-      // Test 3: P2WPKH 基本格式（bc1 前缀）
-      const a0 = await ckdPub(chPu.pub, chPu.chain, chPu.depth, chPu.parentFP, 0);
-      const addr = await btc_p2wpkh(a0.pub);
-      const ok = addr.startsWith('bc1') && addr===addr.toLowerCase();
-      logSelfTest('Bech32: bc1 前缀且全小写 = ' + ok, ok);
-
-      logSelfTest('自测完成。', true);
-    }catch(e){
-      logSelfTest('自测异常：'+(e?.message||e), false);
-      console.error(e);
-    }finally{
-      lockBtn(btn,false);
-    }
   });
 });
 </script>
