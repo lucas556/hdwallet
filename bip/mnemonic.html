@@ -96,8 +96,8 @@
 /* ── 依赖 ── */
 import * as noble from './vendor/noble.bundle.js';
 const { secp, keccak_256, rmd160 } = noble;
-// 预计算基点提高 CKDpub 性能
-secp.utils.precompute(8, true);
+// ✅ 只传一个参数；兼容不同版本的 noble
+try { if (secp?.utils?.precompute) secp.utils.precompute(8); } catch(e){ console.warn('precompute skipped:', e); }
 
 /* ── 常量配置（统一魔法数） ── */
 const CONFIG = {
