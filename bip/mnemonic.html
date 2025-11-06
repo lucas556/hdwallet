@@ -89,9 +89,9 @@
 
 <script type="module">
 /* ── 依赖 ── */
-import * as secp from 'https://esm.run/@noble/secp256k1@1.7.1';
-import { keccak_256 }  from 'https://esm.sh/@noble/hashes@1.4.0/sha3';
-import * as rmd160     from 'https://esm.sh/@noble/hashes@1.4.0/ripemd160';
+
+import * as noble from './vendor/noble.bundle.js';
+const { secp, keccak_256, rmd160 } = noble;
 
 /* ── 基础工具 ── */
 const te=new TextEncoder(), td=new TextDecoder();
