@@ -5,17 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>多链账户与地址推导（BIP39 → BIP32）</title>
 
-  <!-- 安全相关头（本地/HTTPS 有效；file:// 可能被忽略） -->
+  <!-- 更严格但允许带 nonce 的内联模块脚本；去掉 frame-ancestors（meta 中无效） -->
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; connect-src 'self'; img-src 'self' data:; 
-                 script-src 'self'; style-src 'self' 'unsafe-inline';
-                 object-src 'none'; base-uri 'none'; frame-ancestors 'none';
+        content="default-src 'self'; connect-src 'self'; img-src 'self' data:;
+                 script-src 'self' 'nonce-YWJjMTIz';
+                 style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none';
                  form-action 'self'; upgrade-insecure-requests">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Permissions-Policy"
         content="geolocation=(), microphone=(), camera=(), payment=(), usb=(), bluetooth=()">
   <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
   <meta http-equiv="Cross-Origin-Resource-Policy" content="same-origin">
+
+  <!-- 预加载模块，提高首次交互速度 -->
+  <link rel="modulepreload" href="./vendor/noble.bundle.js">
 
   <style>
     :root{--bg:#0b1220;--card:#0f1724;--text:#e5e7eb;--muted:#9ca3af;--good:#10b981;--bad:#ef4444}
@@ -87,7 +90,7 @@
       <label>索引：
         <input id="in-index" type="number" inputmode="numeric"
                min="0" max="2147483647" step="1" value="0"
-               style="width:110px" onwheel="this.blur()" pattern="[0-9]*" autocomplete="off"/>
+               style="width:110px" pattern="[0-9]*" autocomplete="off"/>
       </label>
       <button id="btn-derive-chain" disabled>生成</button>
       <span id="ch-tip" class="muted"></span>
@@ -108,7 +111,7 @@
   </div>
 </div>
 
-<script type="module">
+<script type="module" nonce="YWJjMTIz">
 /* ── 依赖 ── */
 import * as noble from './vendor/noble.bundle.js';
 const { secp, keccak_256, rmd160 } = noble;
@@ -220,7 +223,7 @@ const bigToBytes = (n, len=32)=>{ const o=new Uint8Array(len); for(let i=len-1;i
 
 /* BIP32 */
 async function rootFromSeed(seed){
-  const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(32);
+  const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(0+32);
   const k = bytesToBig(IL); if(k===0n||k>=curveN) throw new Error('invalid master');
   const pub=secp.getPublicKey(IL,true); return {key:IL,chain:IR,pub,depth:0,child:0,parentFP:new Uint8Array(4)};
 }
@@ -266,9 +269,7 @@ function eosK1(pub){const c=(rmd160.ripemd160(cat(pub,te.encode('K1')))).slice(0
 /* 全局与缓存 */
 let gRoot=null;
 // 为每条链缓存 account/change 以及序列化好的 xprv/xpub
-const CACHE = {
-  BTC: null, ETH: null, TRX: null, EOS: null
-};
+const CACHE = { BTC: null, ETH: null, TRX: null, EOS: null };
 
 /* 工具：读取并校验 index（0 <= idx < 2^31） */
 function readIndex(){
@@ -324,7 +325,7 @@ function wipeSensitive(){
 
 /* 事件绑定 */
 document.addEventListener('DOMContentLoaded', async ()=>{
-  // 防滚轮误改 index（双保险）
+  // 防滚轮误改 index（统一用 JS 处理，不用内联 onwheel）
   const idxEl = $('in-index');
   if (idxEl){
     idxEl.addEventListener('wheel', (e)=>{ e.preventDefault(); idxEl.blur(); }, {passive:false});
@@ -362,8 +363,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const tip=$('mn-tip');
     try{
       setStatus(tip,'正在计算…','muted');
-      // 让出一帧，先把禁用/提示渲染出来
-      await new Promise(r=>requestAnimationFrame(r));
+      await new Promise(r=>requestAnimationFrame(r)); // 让出一帧，先渲染禁用状态
 
       const ent = parseInt(($('sl-words').value||'128'),10);
       const pass = ($('in-pass').value || '');
@@ -372,12 +372,10 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       const root     = await safeRootFromSeed(seed);
       gRoot          = root;
 
-      // 尽力清理 seed 的明文（JS 内存无法真正保证）
       try{ seed.fill(0); }catch(_){}
 
       $('out-mnemonic').textContent = mnemonic;
-      $('out-seed').textContent     = b2h(root.key) ? b2h(await hmac512(new Uint8Array(0), new Uint8Array(0))) && b2h(seed) : b2h(seed); // 占位避免闪烁
-      $('out-seed').textContent     = b2h(seed); // 真实显示
+      $('out-seed').textContent     = b2h(seed);
       $('mnemo-box').style.display  = 'block';
 
       const rx = await serXPRV(gRoot.key, gRoot.chain, gRoot.depth, gRoot.parentFP, gRoot.child);
@@ -386,9 +384,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('out-root-xpub').textContent = ru;
       $('root-box').style.display = 'block';
 
-      // 启用派生按钮
       $('btn-derive-chain').disabled = false;
-
       setStatus(tip,'就绪','ok');
     }catch(e){
       setErr(tip, e);
@@ -420,12 +416,12 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
       if (chain === 'BTC') {
         const C = CONFIG.BTC;
-        const { change } = await ensurePath('BTC', C);
+        const entry = await ensurePath('BTC', C);
+        const { change } = entry;
 
-        // 懒加载并缓存序列化
-        if (!CACHE.BTC.sxprv) {
-          CACHE.BTC.sxprv = await serXPRV(change.key, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPRV);
-          CACHE.BTC.sxpub = await serXPUB(change.pub, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPUB);
+        if (!entry.sxprv) {
+          entry.sxprv = await serXPRV(change.key, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPRV);
+          entry.sxpub = await serXPUB(change.pub, change.chain, change.depth, change.parentFP, change.child, C.SLIP132.ZPUB);
         }
 
         const aN   = await ckdPub(change.pub, change.chain, change.depth, index);
@@ -434,19 +430,20 @@ document.addEventListener('DOMContentLoaded', async ()=>{
         pathText = `m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址：/${index} → bech32`;
         lblX.textContent = 'BIP32 Extended Private Key（zprv）：';
         lblU.textContent = 'BIP32 Extended Public Key（zpub）：';
-        outX.textContent = CACHE.BTC.sxprv;
-        outU.textContent = CACHE.BTC.sxpub;
+        outX.textContent = entry.sxprv;
+        outU.textContent = entry.sxpub;
         $('addr-title').textContent = `地址 ${index}（bc1q）：`;
         outA.textContent = addr;
 
       } else if (chain === 'ETH') {
         const C = CONFIG.ETH;
-        const { change } = await ensurePath('ETH', C);
+        const entry = await ensurePath('ETH', C);
+        const { change } = entry;
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
 
-        if (!CACHE.ETH.sxprv) {
-          CACHE.ETH.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPRV);
-          CACHE.ETH.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPUB);
+        if (!entry.sxprv) {
+          entry.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
+          entry.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
         }
 
         const aN = await ckdPub(change.pub, change.chain, change.depth, index);
@@ -454,19 +451,20 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=CACHE.ETH.sxprv;
-        outU.textContent=CACHE.ETH.sxpub;
+        outX.textContent=entry.sxprv;
+        outU.textContent=entry.sxpub;
         $('addr-title').textContent=`地址 ${index}（EIP-55）：`;
         outA.textContent=addr;
 
       } else if (chain === 'TRX') {
         const C = CONFIG.TRX;
-        const { change } = await ensurePath('TRX', C);
+        const entry = await ensurePath('TRX', C);
+        const { change } = entry;
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；地址 /${index}`;
 
-        if (!CACHE.TRX.sxprv) {
-          CACHE.TRX.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPRV);
-          CACHE.TRX.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPUB);
+        if (!entry.sxprv) {
+          entry.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
+          entry.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
         }
 
         const aN = await ckdPub(change.pub, change.chain, change.depth, index);
@@ -474,19 +472,20 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=CACHE.TRX.sxprv;
-        outU.textContent=CACHE.TRX.sxpub;
+        outX.textContent=entry.sxprv;
+        outU.textContent=entry.sxpub;
         $('addr-title').textContent=`地址 ${index}（TRON）：`;
         outA.textContent=addr;
 
       } else if (chain === 'EOS') {
         const C = CONFIG.EOS;
-        const { change } = await ensurePath('EOS', C);
+        const entry = await ensurePath('EOS', C);
+        const { change } = entry;
         pathText=`m/${C.PURPOSE}'/${C.COIN}'/${C.ACCOUNT}'/${C.CHANGE}；公钥 /${index}`;
 
-        if (!CACHE.EOS.sxprv) {
-          CACHE.EOS.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPRV);
-          CACHE.EOS.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child, CONFIG.BIP32.XPUB);
+        if (!entry.sxprv) {
+          entry.sxprv = await serXPRV(change.key,change.chain,change.depth,change.parentFP,change.child);
+          entry.sxpub = await serXPUB(change.pub,change.chain,change.depth,change.parentFP,change.child);
         }
 
         const aN = await ckdPub(change.pub, change.chain, change.depth, index);
@@ -495,15 +494,15 @@ document.addEventListener('DOMContentLoaded', async ()=>{
 
         lblX.textContent='BIP32 Extended Private Key：';
         lblU.textContent='BIP32 Extended Public Key：';
-        outX.textContent=CACHE.EOS.sxprv;
-        outU.textContent=CACHE.EOS.sxpub;
+        outX.textContent=entry.sxprv;
+        outU.textContent=entry.sxpub;
         $('addr-title').textContent=`示例 /${index} 公钥（EOS…）：`;
         outA.textContent=legacy;
         $('eos-k1-box').style.display='block';
         $('out-eos-k1').textContent=k1;
       }
 
-      // 安全的 DOM 构建替代 innerHTML
+      // 安全构建 DOM
       const pathEl = $('acct-path-line');
       pathEl.replaceChildren();
       const b = document.createElement('b'); b.textContent = '路径：';
