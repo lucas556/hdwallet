@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>多链账户与地址推导（BIP39 → BIP32）</title>
 
-  <!-- 更严格但允许带 nonce 的内联模块脚本；去掉 frame-ancestors（meta 中无效） -->
+  <!-- CSP：允许带 nonce 的内联模块脚本；不要在 <meta> 里放 frame-ancestors -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; connect-src 'self'; img-src 'self' data:;
                  script-src 'self' 'nonce-YWJjMTIz';
@@ -17,7 +17,6 @@
   <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin">
   <meta http-equiv="Cross-Origin-Resource-Policy" content="same-origin">
 
-  <!-- 预加载模块，提高首次交互速度 -->
   <link rel="modulepreload" href="./vendor/noble.bundle.js">
 
   <style>
@@ -92,7 +91,8 @@
                min="0" max="2147483647" step="1" value="0"
                style="width:110px" pattern="[0-9]*" autocomplete="off"/>
       </label>
-      <button id="btn-derive-chain" disabled>生成</button>
+      <!-- 现在默认可点；由点击处理里判断并弹窗提示 -->
+      <button id="btn-derive-chain">生成</button>
       <span id="ch-tip" class="muted"></span>
     </div>
 
@@ -115,17 +115,13 @@
 /* ── 依赖 ── */
 import * as noble from './vendor/noble.bundle.js';
 const { secp, keccak_256, rmd160 } = noble;
-// 仅预热一次（兼容不同 noble 版本）
 let PRECOMP_DONE=false;
 try { if (!PRECOMP_DONE && secp?.utils?.precompute) { secp.utils.precompute(8); PRECOMP_DONE=true; } } catch(e){ console.warn('precompute skipped:', e); }
 
-/* ── 常量配置（统一魔法数） ── */
+/* ── 常量配置 ── */
 const CONFIG = Object.freeze({
   WORDLIST_SHA256: '2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda',
-  BIP32: Object.freeze({
-    XPRV: [0x04,0x88,0xAD,0xE4],
-    XPUB: [0x04,0x88,0xB2,0x1E],
-  }),
+  BIP32: Object.freeze({ XPRV: [0x04,0x88,0xAD,0xE4], XPUB: [0x04,0x88,0xB2,0x1E] }),
   BTC: Object.freeze({
     HRP: 'bc',
     PURPOSE: 84, COIN: 0, ACCOUNT: 0, CHANGE: 0,
@@ -149,7 +145,7 @@ async function hash160(u8){return rmd160.ripemd160(await sha256(u8));}
 async function hmac512(key,data){const k=await crypto.subtle.importKey('raw',key,{name:'HMAC',hash:'SHA-512'},false,['sign']);return new Uint8Array(await crypto.subtle.sign('HMAC',k,data));}
 async function pbkdf2_sha512(pwd,salt,iters,dkLen){const k=await crypto.subtle.importKey('raw',pwd,'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',hash:'SHA-512',salt,iterations:iters},k,dkLen*8);return new Uint8Array(bits);}
 
-/* 状态/错误输出（防 XSS） */
+/* 状态/错误输出 */
 function setStatus(el, text, css='muted'){ if(!el) return; el.className = css; el.textContent = String(text ?? ''); }
 function setErr(el, text){ setStatus(el, `失败：${text?.message ?? text}`, 'err'); }
 
@@ -223,14 +219,11 @@ const bigToBytes = (n, len=32)=>{ const o=new Uint8Array(len); for(let i=len-1;i
 
 /* BIP32 */
 async function rootFromSeed(seed){
-  const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(0+32);
+  const I=await hmac512(te.encode('Bitcoin seed'),seed); const IL=I.slice(0,32),IR=I.slice(32);
   const k = bytesToBig(IL); if(k===0n||k>=curveN) throw new Error('invalid master');
   const pub=secp.getPublicKey(IL,true); return {key:IL,chain:IR,pub,depth:0,child:0,parentFP:new Uint8Array(4)};
 }
-async function safeRootFromSeed(seed){
-  try { return await rootFromSeed(seed); }
-  catch { return await rootFromSeed(seed); } // 极小概率再试一次
-}
+async function safeRootFromSeed(seed){ try { return await rootFromSeed(seed); } catch { return await rootFromSeed(seed); } }
 async function ckdPriv(n,i,hard){
   const idx = hard ? (i|0x80000000) : i;
   const data= hard ? cat(new Uint8Array([0]), n.key, ser32(idx))
@@ -249,7 +242,7 @@ async function ckdPub(pub, chain, depth, i){
   const il = bytesToBig(I.slice(0,32));
   if (il >= curveN) throw new Error('invalid IL');
   const child = secp.Point.fromHex(pub).add(secp.Point.BASE.multiply(il)).toRawBytes(true);
-  const fp = (await hash160(pub)).slice(0,4); // 父指纹来自父公钥
+  const fp = (await hash160(pub)).slice(0,4);
   return { pub: child, chain: I.slice(32), depth: depth+1, parentFP: fp, child: i };
 }
 async function serXPRV(key,chain,depth,fp,child,ver=CONFIG.BIP32.XPRV){return b58check(cat(new Uint8Array(ver),new Uint8Array([depth]),fp,ser32(child),chain,new Uint8Array([0]),key));}
@@ -268,7 +261,6 @@ function eosK1(pub){const c=(rmd160.ripemd160(cat(pub,te.encode('K1')))).slice(0
 
 /* 全局与缓存 */
 let gRoot=null;
-// 为每条链缓存 account/change 以及序列化好的 xprv/xpub
 const CACHE = { BTC: null, ETH: null, TRX: null, EOS: null };
 
 /* 工具：读取并校验 index（0 <= idx < 2^31） */
@@ -283,7 +275,7 @@ function readIndex(){
   return n|0;
 }
 
-/* 缓存：得到账户层/变更层节点（以及序列化字符串懒加载） */
+/* 缓存：得到账户层/变更层节点 */
 async function ensurePath(cacheKey, C){
   if (!CACHE[cacheKey]) {
     let t = gRoot;
@@ -314,18 +306,15 @@ function wipeSensitive(){
   ['mnemo-box','root-box','acct-box','eos-k1-box'].forEach(id=>{
     const el=$(id); if(el) el.style.display='none';
   });
-  setStatus($('ch-tip'),'已锁定，需重新生成。','muted');
+  setStatus($('ch-tip'),'已锁定，需先完成步骤①“生成助记词 & Seed”。','err');
 
   const passEl = $('in-pass'); if (passEl) passEl.value = '';
   const idxEl  = $('in-index'); if (idxEl) idxEl.value = '0';
-
-  // 派生按钮回到禁用
-  $('btn-derive-chain').disabled = true;
 }
 
 /* 事件绑定 */
 document.addEventListener('DOMContentLoaded', async ()=>{
-  // 防滚轮误改 index（统一用 JS 处理，不用内联 onwheel）
+  // 防滚轮误改 index
   const idxEl = $('in-index');
   if (idxEl){
     idxEl.addEventListener('wheel', (e)=>{ e.preventDefault(); idxEl.blur(); }, {passive:false});
@@ -341,19 +330,16 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     if (isSecureContext) $('btn-gen').disabled=false;
   } catch(e){
     $('btn-gen').disabled = true;
-    $('btn-derive-chain').disabled = true;
+    // ②步保持可点，但会因 gRoot==null 弹窗提示
     setStatus($('mn-tip'),'词表加载失败（离线/损坏），无法生成助记词。','err');
     console.error(e);
   }
 
-  // 网络状态提示（可选）
   window.addEventListener('offline', ()=>{ setStatus($('mn-tip'),'已离线：若未缓存词表，将无法生成助记词。','err'); });
   window.addEventListener('online',  ()=>{ setStatus($('mn-tip'),'','muted'); });
 
-  // 清除/锁屏按钮
   $('btn-lock').addEventListener('click', ()=> wipeSensitive());
 
-  // 页面隐藏/卸载/关闭时清理
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) wipeSensitive(); });
   window.addEventListener('pagehide', ()=> wipeSensitive());
   window.addEventListener('beforeunload', ()=> wipeSensitive());
@@ -363,7 +349,7 @@ document.addEventListener('DOMContentLoaded', async ()=>{
     const tip=$('mn-tip');
     try{
       setStatus(tip,'正在计算…','muted');
-      await new Promise(r=>requestAnimationFrame(r)); // 让出一帧，先渲染禁用状态
+      await new Promise(r=>requestAnimationFrame(r));
 
       const ent = parseInt(($('sl-words').value||'128'),10);
       const pass = ($('in-pass').value || '');
@@ -384,8 +370,8 @@ document.addEventListener('DOMContentLoaded', async ()=>{
       $('out-root-xpub').textContent = ru;
       $('root-box').style.display = 'block';
 
-      $('btn-derive-chain').disabled = false;
       setStatus(tip,'就绪','ok');
+      setStatus($('ch-tip'),'','muted');
     }catch(e){
       setErr(tip, e);
       console.error(e);
@@ -397,8 +383,11 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   $('btn-derive-chain').addEventListener('click', async ()=>{
     const btn=$('btn-derive-chain'); if(isLocked(btn)) return;
 
+    // ✅ 关键：未完成第①步时弹窗提醒，并给出错误提示
     if(!gRoot){
       alert('请先执行“① 生成助记词 & Seed”。');
+      setStatus($('ch-tip'),'未初始化：请先完成步骤①。','err');
+      $('btn-gen')?.focus();
       return;
     }
 
